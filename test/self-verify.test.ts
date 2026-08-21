@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -91,25 +91,153 @@ test("rejects remote HTTP verifier endpoints before sending credentials", async 
   }
 });
 
+test("does not let a provider setting authorize a custom endpoint", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pi-self-verify-auth-"));
+  await mkdir(join(root, ".git"));
+  await mkdir(join(root, ".pi"));
+  await writeFile(join(root, ".pi", "settings.json"), JSON.stringify({ verify: {
+    model: "test-model",
+    provider: "deepseek",
+  } }));
+  const originalFetch = globalThis.fetch;
+  const names = [
+    "VERIFIER_API_KEY", "OPENAI_API_KEY", "DEEPSEEK_API_KEY", "VERIFIER_AUTH_PROVIDER",
+    "VERIFIER_MODEL", "VERIFIER_PROVIDER", "VERIFIER_BASE_URL", "OPENAI_BASE_URL",
+    "VERIFIER_EVALS", "VERIFIER_PIVOTS",
+  ];
+  const original = Object.fromEntries(names.map((name) => [name, process.env[name]]));
+  for (const name of names) delete process.env[name];
+  process.env.VERIFIER_BASE_URL = "https://example.test/v1";
+  process.env.VERIFIER_EVALS = "1";
+  process.env.VERIFIER_PIVOTS = "1";
+  globalThis.fetch = async (_input, init) => {
+    assert.equal(new Headers(init?.headers).get("authorization"), null);
+    return new Response(JSON.stringify({ choices: [{
+      message: { content: "<score_A> A </score_A> <score_B> T </score_B>" },
+      logprobs: null,
+    }] }), { status: 200, headers: { "content-type": "application/json" } });
+  };
+  try {
+    await runSelfVerify({
+      cwd: root,
+      task: "choose a candidate",
+      candidateCount: 2,
+      runCommand: async () => ({
+        stdout: JSON.stringify({
+          type: "message_end",
+          message: { role: "assistant", content: [{ type: "text", text: "candidate" }] },
+        }),
+        stderr: "",
+        code: 0,
+      }),
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+    for (const [name, value] of Object.entries(original)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("uses safe verify settings", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pi-self-verify-settings-"));
+  await mkdir(join(root, ".git"));
+  await mkdir(join(root, ".pi"));
+  await writeFile(join(root, ".pi", "settings.json"), JSON.stringify({ verify: {
+    candidates: 2,
+    evals: 1,
+    pivots: 1,
+    model: "deepseek-v4-flash",
+    provider: "deepseek",
+    topLogprobs: 5,
+    maxTokens: 123,
+    effort: "off",
+  } }));
+  const originalFetch = globalThis.fetch;
+  const names = [
+    "VERIFIER_API_KEY", "VERIFIER_BASE_URL", "OPENAI_BASE_URL", "VERIFIER_MODEL",
+    "VERIFIER_PROVIDER", "VERIFIER_TOP_LOGPROBS", "VERIFIER_MAX_TOKENS",
+    "DEEPSEEK_MAX_TOKENS", "DEEPSEEK_EFFORT", "VERIFIER_EVALS", "VERIFIER_PIVOTS",
+  ];
+  const original = Object.fromEntries(names.map((name) => [name, process.env[name]]));
+  for (const name of names) delete process.env[name];
+  process.env.VERIFIER_API_KEY = "test";
+  globalThis.fetch = async (input, init) => {
+    assert.equal(String(input), "https://api.deepseek.com/chat/completions");
+    const body = JSON.parse(String(init?.body)) as {
+      model: string; max_tokens: number; top_logprobs: number; thinking?: unknown;
+    };
+    assert.equal(body.model, "deepseek-v4-flash");
+    assert.equal(body.max_tokens, 123);
+    assert.equal(body.top_logprobs, 5);
+    assert.equal(body.thinking, undefined);
+    return new Response(JSON.stringify({ choices: [{
+      message: { content: "<score_A> A </score_A> <score_B> T </score_B>" },
+      logprobs: null,
+    }] }), { status: 200, headers: { "content-type": "application/json" } });
+  };
+  let generated = 0;
+  try {
+    const result = await runSelfVerify({
+      cwd: root,
+      task: "choose a candidate",
+      runCommand: async () => ({
+        stdout: JSON.stringify({
+          type: "message_end",
+          message: { role: "assistant", content: [{ type: "text", text: `candidate ${++generated}` }] },
+        }),
+        stderr: "",
+        code: 0,
+      }),
+    });
+    assert.equal(result.candidates.length, 2);
+    assert.equal(result.evals, 1);
+    assert.equal(result.pivots, 1);
+    assert.equal(result.model, "deepseek-v4-flash");
+  } finally {
+    globalThis.fetch = originalFetch;
+    for (const [name, value] of Object.entries(original)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("uses Vertex response logprobs when configured", async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-self-verify-vertex-"));
   await mkdir(join(root, ".git"));
+  await mkdir(join(root, ".pi"));
+  await writeFile(join(root, ".pi", "settings.json"), JSON.stringify({ verify: {
+    project: "test-project",
+    location: "global",
+    thinkingBudget: 0,
+  } }));
   const originalFetch = globalThis.fetch;
   const names = [
     "VERIFIER_PROVIDER", "VERIFIER_MODEL", "VERIFIER_BASE_URL", "OPENAI_BASE_URL",
-    "VERIFIER_API_KEY", "VERTEX_API_KEY", "VERTEX_ACCESS_TOKEN", "GOOGLE_CLOUD_PROJECT",
-    "GOOGLE_CLOUD_LOCATION",
+    "VERIFIER_API_KEY", "VERTEX_API_KEY", "GOOGLE_API_KEY", "VERTEX_ACCESS_TOKEN",
+    "GOOGLE_OAUTH_ACCESS_TOKEN", "GOOGLE_CLOUD_PROJECT", "VERTEX_PROJECT",
+    "GOOGLE_CLOUD_LOCATION", "VERTEX_LOCATION", "VERTEX_THINKING_BUDGET",
   ];
   const original = Object.fromEntries(names.map((name) => [name, process.env[name]]));
   process.env.VERIFIER_PROVIDER = "vertex";
   process.env.VERIFIER_MODEL = "gemini-2.5-flash";
   process.env.VERTEX_ACCESS_TOKEN = "test-token";
-  process.env.GOOGLE_CLOUD_PROJECT = "test-project";
-  process.env.GOOGLE_CLOUD_LOCATION = "global";
-  for (const name of ["VERIFIER_BASE_URL", "OPENAI_BASE_URL", "VERIFIER_API_KEY", "VERTEX_API_KEY"]) delete process.env[name];
-  globalThis.fetch = async (_input, init) => {
-    const body = JSON.parse(String(init?.body)) as { generationConfig: { logprobs: number } };
+  for (const name of [
+    "VERIFIER_BASE_URL", "OPENAI_BASE_URL", "VERIFIER_API_KEY", "VERTEX_API_KEY",
+    "GOOGLE_API_KEY", "GOOGLE_OAUTH_ACCESS_TOKEN", "GOOGLE_CLOUD_PROJECT", "VERTEX_PROJECT",
+    "GOOGLE_CLOUD_LOCATION", "VERTEX_LOCATION", "VERTEX_THINKING_BUDGET",
+  ]) delete process.env[name];
+  globalThis.fetch = async (input, init) => {
+    assert.match(String(input), /projects\/test-project\/locations\/global\//);
+    const body = JSON.parse(String(init?.body)) as {
+      generationConfig: { logprobs: number; thinkingConfig: { thinkingBudget: number } };
+    };
     assert.equal(body.generationConfig.logprobs, 5);
+    assert.equal(body.generationConfig.thinkingConfig.thinkingBudget, 0);
     const tokens = ["<score_A>", " A", "</score_A>", "<score_B>", " T", "</score_B>"];
     return new Response(JSON.stringify({
       candidates: [{

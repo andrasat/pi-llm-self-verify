@@ -338,10 +338,11 @@ async function verifierConfig(root: string, options: VerifyOptions, settings?: J
     "topLogprobs",
     DEFAULT_TOP_LOGPROBS,
   );
-  if (topLogprobs > MAX_TOP_LOGPROBS) throw new Error(`topLogprobs must be between 0 and ${MAX_TOP_LOGPROBS}`);
+  if (topLogprobs > MAX_TOP_LOGPROBS) throw new Error(`topLogprobs must be between 1 and ${MAX_TOP_LOGPROBS}`);
   const maxTokens = positiveInt(
     process.env.VERIFIER_MAX_TOKENS
-      || (effectiveModel.startsWith("deepseek") ? process.env.DEEPSEEK_MAX_TOKENS : undefined),
+      || (effectiveModel.startsWith("deepseek") ? process.env.DEEPSEEK_MAX_TOKENS : undefined)
+      || effectiveSettings.maxTokens,
     "maxTokens",
     effectiveModel.startsWith("deepseek") ? 32_768 : 4_096,
   );
@@ -349,7 +350,7 @@ async function verifierConfig(root: string, options: VerifyOptions, settings?: J
   if (backend === "vertex") {
     const model = effectiveModel.includes("/") ? effectiveModel.split("/").at(-1)! : effectiveModel;
     if (!model.startsWith("gemini-")) throw new Error("Vertex verifier models must be named gemini-*");
-      const apiKey = process.env.VERTEX_API_KEY || process.env.GOOGLE_API_KEY;
+    const apiKey = process.env.VERTEX_API_KEY || process.env.GOOGLE_API_KEY;
     const accessToken = apiKey ? undefined : await vertexAccessToken(options);
     if (!apiKey && !accessToken) {
       throw new Error("set VERTEX_API_KEY or configure Application Default Credentials with gcloud");
@@ -379,9 +380,8 @@ async function verifierConfig(root: string, options: VerifyOptions, settings?: J
     throw new Error("set VERIFIER_BASE_URL or OPENAI_BASE_URL for an OpenAI-compatible logprob endpoint");
   }
   const inferredProvider = compatibleProvider(explicitBase, effectiveModel);
-  const explicitAuthProvider = process.env.VERIFIER_AUTH_PROVIDER
-    || (requestedProvider && !isVertexProvider(requestedProvider) && requestedProvider !== "openai-compatible"
-      ? requestedProvider.toLowerCase() : undefined);
+  // Only an environment value may authorize sending a stored key to a custom endpoint.
+  const explicitAuthProvider = process.env.VERIFIER_AUTH_PROVIDER;
   const authProvider = explicitAuthProvider || inferredProvider;
   const expectedHosts: Record<string, string[]> = {
     deepseek: ["api.deepseek.com"],
@@ -401,9 +401,11 @@ async function verifierConfig(root: string, options: VerifyOptions, settings?: J
   if (effectiveModel.startsWith("deepseek") && !apiKey) {
     throw new Error("no verifier API key (set VERIFIER_API_KEY, DEEPSEEK_API_KEY, or Pi /login deepseek)");
   }
+  const configuredEffort = typeof effectiveSettings.effort === "string"
+    ? effectiveSettings.effort : undefined;
   const effort = effectiveModel.startsWith("deepseek")
-    ? process.env.DEEPSEEK_EFFORT || "high"
-    : process.env.DEEPSEEK_EFFORT;
+    ? process.env.DEEPSEEK_EFFORT || configuredEffort || "high"
+    : process.env.DEEPSEEK_EFFORT || configuredEffort;
   const provider = (requestedProvider || compatibleProvider(explicitBase, effectiveModel)).toLowerCase();
   return {
     backend,
@@ -706,8 +708,8 @@ export async function runSelfVerify(options: VerifyOptions): Promise<SelectionRe
   if (!options.task.trim()) throw new Error("task must not be empty");
   const root = findProjectRoot(options.cwd);
   const criteria = normalizeCriteria(options.criteria);
-  const candidateCount = positiveInt(options.candidateCount, "candidateCount", DEFAULT_CANDIDATES);
   const settings = await readSettings(root);
+  const candidateCount = positiveInt(options.candidateCount ?? settings.candidates, "candidateCount", DEFAULT_CANDIDATES);
   const evals = positiveInt(options.evals ?? process.env.VERIFIER_EVALS ?? settings.evals, "evals", DEFAULT_EVALS);
   const pivots = positiveInt(options.pivots ?? process.env.VERIFIER_PIVOTS ?? settings.pivots, "pivots", DEFAULT_PIVOTS);
   if (candidateCount < 2 || candidateCount > MAX_CANDIDATES) {

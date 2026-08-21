@@ -14,10 +14,10 @@ From this repository while developing:
 pi install /absolute/path/to/pi-llm-self-verify
 ```
 
-From Git after a tagged release:
+Current release candidate from Git:
 
 ```bash
-pi install git:github.com/andrasat/pi-llm-self-verify@v0.1.0
+pi install git:github.com/andrasat/pi-llm-self-verify@v0.1.0-rc.2
 ```
 
 Use `-l` with either command to write the package to the current project's
@@ -49,44 +49,56 @@ The package also provides `/skill:self-verify` for agents that need the
 workflow instructions explicitly.
 
 Defaults are three candidates, two repeated evaluations per criterion, and one
-pivot. Override them in `.pi/settings.json` or `~/.pi/agent/settings.json`:
+pivot. Put non-secret defaults in `.pi/settings.json` or
+`~/.pi/agent/settings.json`:
 
 ```json
 {
   "verify": {
-    "model": "deepseek-v4-flash",
+    "candidates": 3,
     "evals": 2,
     "pivots": 1,
-    "topLogprobs": 20
+    "model": "deepseek-v4-flash",
+    "provider": "deepseek",
+    "topLogprobs": 20,
+    "maxTokens": 32768,
+    "effort": "high",
+    "project": "my-gcp-project",
+    "location": "global",
+    "thinkingBudget": 0
   }
 }
 ```
 
-Project settings override global settings. Tool arguments override environment
-variables, which override the matching settings values:
+This is the complete safe settings template. `effort` applies only to
+DeepSeek; `project`, `location`, and `thinkingBudget` apply only to Vertex.
+Delete fields for backends you do not use. Project settings override global
+settings. For matching values, precedence is tool argument, environment,
+project setting, global setting, then the default.
 
-| Variable | Purpose |
-| --- | --- |
-| `VERIFIER_PROVIDER` | `vertex` for Vertex Gemini; optionally `together`, `cerebras`, `fireworks`, `openrouter`, or `openai-compatible` |
-| `VERIFIER_MODEL` | Verifier model id |
-| `VERIFIER_API_KEY` | Explicit verifier API key |
-| `VERIFIER_BASE_URL` | OpenAI-compatible `/v1` or `/chat/completions` base |
-| `VERIFIER_AUTH_PROVIDER` | Explicit Pi `/login` provider id for stored API-key reuse with a custom HTTPS endpoint |
-| `VERIFIER_TOP_LOGPROBS` | Alternatives per token, `1`–`20` (default `20`) |
-| `VERIFIER_MAX_TOKENS` | Generic verifier output budget |
-| `OPENAI_BASE_URL` | Fallback OpenAI-compatible base URL |
-| `OPENAI_API_KEY` | Key for an OpenAI-compatible endpoint |
-| `DEEPSEEK_API_KEY` | Hosted DeepSeek key |
-| `VERIFIER_EVALS` | Repeated evaluations |
-| `VERIFIER_PIVOTS` | Tournament pivots |
-| `DEEPSEEK_EFFORT` | DeepSeek reasoning effort (`off`, `low`, `high`, `max`) |
-| `DEEPSEEK_MAX_TOKENS` | DeepSeek output budget compatibility alias |
-| `VERTEX_API_KEY` | Vertex API key |
-| `VERTEX_ACCESS_TOKEN` | Vertex OAuth access token |
-| `VERTEX_BASE_URL` | Full Vertex `:generateContent` URL (advanced) |
-| `GOOGLE_CLOUD_PROJECT` | Vertex project id |
-| `GOOGLE_CLOUD_LOCATION` | Vertex location, normally `global` |
-| `VERTEX_THINKING_BUDGET` | Vertex thinking tokens, default `0` |
+Endpoint and authentication values are deliberately environment/Pi-auth only:
+a repository settings file must not select where a stored credential is sent.
+
+| Variable | Settings key | Purpose |
+| --- | --- | --- |
+| `VERIFIER_PROVIDER` | `provider` | `vertex` for Vertex Gemini; optionally `together`, `cerebras`, `fireworks`, `openrouter`, or `openai-compatible` |
+| `VERIFIER_MODEL` | `model` | Verifier model id |
+| `VERIFIER_TOP_LOGPROBS` | `topLogprobs` | Alternatives per token, `1`–`20` (default `20`) |
+| `VERIFIER_MAX_TOKENS` | `maxTokens` | Generic verifier output budget |
+| `VERIFIER_EVALS` | `evals` | Repeated evaluations |
+| `VERIFIER_PIVOTS` | `pivots` | Tournament pivots |
+| — | `candidates` | Candidate count, `2`–`5`; tool argument is `candidates` |
+| `DEEPSEEK_EFFORT` | `effort` | DeepSeek reasoning effort (`off`, `low`, `high`, `max`) |
+| `DEEPSEEK_MAX_TOKENS` | `maxTokens` | DeepSeek output budget compatibility alias |
+| `GOOGLE_CLOUD_PROJECT` or `VERTEX_PROJECT` | `project` | Vertex project id |
+| `GOOGLE_CLOUD_LOCATION` or `VERTEX_LOCATION` | `location` | Vertex location, normally `global` |
+| `VERTEX_THINKING_BUDGET` | `thinkingBudget` | Vertex thinking tokens, default `0` |
+| `VERIFIER_BASE_URL` or `OPENAI_BASE_URL` | — | OpenAI-compatible `/v1` or `/chat/completions` base; environment only |
+| `VERIFIER_AUTH_PROVIDER` | — | Explicit Pi `/login` provider id for stored API-key reuse with a custom HTTPS endpoint; environment only |
+| `VERTEX_BASE_URL` | — | Full Vertex `:generateContent` URL; environment only |
+| `VERIFIER_API_KEY`, `OPENAI_API_KEY`, or `DEEPSEEK_API_KEY` | — | OpenAI-compatible API key; environment/Pi auth only |
+| `VERTEX_API_KEY` or `GOOGLE_API_KEY` | — | Vertex API key; environment only |
+| `VERTEX_ACCESS_TOKEN` or `GOOGLE_OAUTH_ACCESS_TOKEN` | — | Vertex OAuth access token; environment only |
 
 Without an explicit key, the extension reuses a stored API-key credential
 configured with Pi's `/login deepseek` flow. It reads that credential through

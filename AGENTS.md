@@ -42,7 +42,7 @@ pi install /absolute/path/to/pi-llm-self-verify
 For a published/tagged release, use:
 
 ```bash
-pi install git:github.com/andrasat/pi-llm-self-verify@v0.1.0
+pi install git:github.com/andrasat/pi-llm-self-verify@<tag>
 ```
 
 Release only after `npm run check`, a clean package dry run, a pushed commit,

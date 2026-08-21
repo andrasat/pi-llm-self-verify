@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.0-rc.2 - 2026-08-22
+
+- Add a complete safe `.pi/settings.json` reference and support its candidate,
+  token-budget, and DeepSeek-effort values.
+- Prevent a project setting from authorizing a stored credential for a custom
+  verifier endpoint.
+
 ## 0.1.0-rc.1 - 2026-08-22
 
 - Add the `self_verify` Pi tool, `/self-verify` command, and workflow skill.

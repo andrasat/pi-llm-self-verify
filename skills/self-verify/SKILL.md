@@ -45,9 +45,10 @@ Useful controls:
 - `VERIFIER_EVALS` and `VERIFIER_PIVOTS`
 - `VERIFIER_AUTH_PROVIDER` for an explicitly selected Pi API-key credential
 
-Non-secret values may be placed in the `verify` object in `.pi/settings.json`;
-project settings override global settings, while tool arguments override
-environment variables. Keep API keys in Pi auth or the environment. The
+Non-secret `verify` settings are `candidates`, `evals`, `pivots`, `model`,
+`provider`, `topLogprobs`, `maxTokens`, `effort`, `project`, `location`, and
+`thinkingBudget`; see the README for the complete JSON template. Endpoint,
+auth-provider, and credential values stay in Pi auth or the environment. The
 selected model must return token-level logprobs and top alternatives; a normal
 text judge is not equivalent.
 
