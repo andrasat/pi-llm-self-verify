@@ -1,0 +1,6 @@
+node_modules/
+.npm/
+dist/
+coverage/
+.pi/verify/candidates/
+.pi/verify/trail.jsonl
