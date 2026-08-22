@@ -18,7 +18,7 @@ pi install /absolute/path/to/pi-llm-self-verify
 Current release candidate from Git:
 
 ```bash
-pi install git:github.com/andrasat/pi-llm-self-verify@v0.1.0-rc.3
+pi install git:github.com/andrasat/pi-llm-self-verify@v0.1.0-rc.4
 ```
 
 Use `-l` with either command to write the package to the current project's

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.0-rc.4 - 2026-08-22
+
+- Update the development-only `tsx`/`esbuild` toolchain to resolve GHSA-67mh-4wv8-2f99.
+
 ## 0.1.0-rc.3 - 2026-08-22
 
 - Require usable token top-logprobs for both verifier score tags and apply a fixed verifier-request deadline.

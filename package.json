@@ -1,6 +1,6 @@
 {
   "name": "pi-llm-self-verify",
-  "version": "0.1.0-rc.3",
+  "version": "0.1.0-rc.4",
   "description": "Best-of-N self-verification for pi coding-agent",
   "type": "module",
   "keywords": [
@@ -43,7 +43,7 @@
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "0.84.2",
     "@types/node": "22.10.2",
-    "tsx": "4.19.2",
+    "tsx": "4.23.12",
     "typebox": "1.3.7",
     "typescript": "5.7.2"
   }
