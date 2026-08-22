@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.0-rc.3 - 2026-08-22
+
+- Require usable token top-logprobs for both verifier score tags and apply a fixed verifier-request deadline.
+- Reuse unordered tournament comparisons, protect local artifacts, and correct artifact-write wording.
+
 ## 0.1.0-rc.2 - 2026-08-22
 
 - Add a complete safe `.pi/settings.json` reference and support its candidate,

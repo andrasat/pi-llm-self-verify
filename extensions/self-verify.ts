@@ -66,7 +66,7 @@ export default function selfVerify(pi: ExtensionAPI) {
   pi.registerTool({
     name: "self_verify",
     label: "Self-Verify",
-    description: "Generate independent read-only candidate solutions, rank them with a logprob verifier, and return the winner. This tool never edits repository files.",
+    description: "Generate independent read-only candidate solutions, rank them with a logprob verifier, and return the winner. Candidate subprocesses are read-only; the tool writes local ignored selection artifacts.",
     promptSnippet: "Generate and rank read-only candidate solutions before implementing a high-stakes task",
     promptGuidelines: [
       "Use self_verify when a task benefits from independent candidate solutions before implementation.",

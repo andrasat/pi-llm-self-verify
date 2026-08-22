@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -24,23 +24,31 @@ test("normalizes criteria and validates positive integers", () => {
   assert.throws(() => normalizeCriteria({}), /1-4/);
 });
 
-test("extracts literal and logprob scores on the A-T scale", () => {
-  assert.deepEqual(scoreResponse({
-    text: "<score_A> A </score_A> <score_B> T </score_B>",
-    positions: [],
-  }), [1, 0]);
+function openAIResponse(a: string, b: string): Response {
+  const tokens = ["<score_A>", ` ${a}`, "</score_A>", "<score_B>", ` ${b}`, "</score_B>"];
+  return new Response(JSON.stringify({ choices: [{
+    message: { content: `<score_A> ${a} </score_A> <score_B> ${b} </score_B>` },
+    logprobs: { content: tokens.map((token) => ({
+      token,
+      top_logprobs: /^[A-T]$/.test(token.trim()) ? [{ token: token.trim(), logprob: 0 }] : [],
+    })) },
+  }] }), { status: 200, headers: { "content-type": "application/json" } });
+}
 
-  assert.deepEqual(scoreResponse({
+test("requires usable top-logprob scores on the A-T scale", () => {
+  const valid = {
     text: "",
     positions: [
-      { token: "<score_A>" },
-      { token: " A", top_logprobs: [{ token: "A", logprob: 0 }] },
-      { token: "</score_A>" },
-      { token: "<score_B>" },
-      { token: " T", top_logprobs: [{ token: "T", logprob: 0 }] },
-      { token: "</score_B>" },
+      { token: "<score_A>" }, { token: " A", top_logprobs: [{ token: "A", logprob: 0 }] }, { token: "</score_A>" },
+      { token: "<score_B>" }, { token: " T", top_logprobs: [{ token: "T", logprob: 0 }] }, { token: "</score_B>" },
     ],
-  }), [1, 0]);
+  };
+  assert.deepEqual(scoreResponse(valid), [1, 0]);
+  assert.throws(() => scoreResponse({ text: "<score_A> A </score_A> <score_B> T </score_B>", positions: [] }), /top_logprobs.*score_A/);
+  assert.throws(() => scoreResponse({ ...valid, positions: [...valid.positions.slice(0, 4), { token: " T" }, valid.positions[5]] }), /top_logprobs.*score_B/);
+  for (const alternatives of [[], [{ token: "Z", logprob: 0 }], [{ token: "A", logprob: Infinity }], [{ token: "A", logprob: 1_000 }]]) {
+    assert.throws(() => scoreResponse({ ...valid, positions: [valid.positions[0], { token: " A", top_logprobs: alternatives }, ...valid.positions.slice(2)] }), /top_logprobs.*score_A/);
+  }
 });
 
 test("builds ring and pivot tournament pairs", () => {
@@ -112,10 +120,7 @@ test("does not let a provider setting authorize a custom endpoint", async () => 
   process.env.VERIFIER_PIVOTS = "1";
   globalThis.fetch = async (_input, init) => {
     assert.equal(new Headers(init?.headers).get("authorization"), null);
-    return new Response(JSON.stringify({ choices: [{
-      message: { content: "<score_A> A </score_A> <score_B> T </score_B>" },
-      logprobs: null,
-    }] }), { status: 200, headers: { "content-type": "application/json" } });
+    return openAIResponse("A", "T");
   };
   try {
     await runSelfVerify({
@@ -173,10 +178,7 @@ test("uses safe verify settings", async () => {
     assert.equal(body.max_tokens, 123);
     assert.equal(body.top_logprobs, 5);
     assert.equal(body.thinking, undefined);
-    return new Response(JSON.stringify({ choices: [{
-      message: { content: "<score_A> A </score_A> <score_B> T </score_B>" },
-      logprobs: null,
-    }] }), { status: 200, headers: { "content-type": "application/json" } });
+    return openAIResponse("A", "T");
   };
   let generated = 0;
   try {
@@ -269,6 +271,29 @@ test("uses Vertex response logprobs when configured", async () => {
     });
     assert.equal(result.model, "gemini-2.5-flash");
     assert.equal(result.candidates.length, 2);
+
+    globalThis.fetch = async () => new Response(JSON.stringify({
+      candidates: [{
+        content: { parts: [{ text: "<score_A> A </score_A> <score_B> T </score_B>" }] },
+        logprobsResult: { topCandidates: [], chosenCandidates: [] },
+      }],
+    }), { status: 200, headers: { "content-type": "application/json" } });
+    await assert.rejects(runSelfVerify({
+      cwd: root,
+      task: "reject missing Vertex logprobs",
+      candidateCount: 2,
+      evals: 1,
+      pivots: 1,
+      topLogprobs: 5,
+      runCommand: async () => ({
+        stdout: JSON.stringify({
+          type: "message_end",
+          message: { role: "assistant", content: [{ type: "text", text: `candidate ${++generated}` }] },
+        }),
+        stderr: "",
+        code: 0,
+      }),
+    }), /top_logprobs.*score_A/);
   } finally {
     globalThis.fetch = originalFetch;
     for (const [name, value] of Object.entries(original)) {
@@ -282,6 +307,8 @@ test("uses Vertex response logprobs when configured", async () => {
 test("runs a read-only candidate selection and records artifacts", async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-self-verify-"));
   await mkdir(join(root, ".git"));
+  await mkdir(join(root, ".pi", "verify", "candidates"), { recursive: true, mode: 0o777 });
+  await writeFile(join(root, ".pi", "verify", "trail.jsonl"), "old\n", { mode: 0o666 });
   const originalFetch = globalThis.fetch;
   const originalEnv = {
     base: process.env.VERIFIER_BASE_URL,
@@ -304,12 +331,7 @@ test("runs a read-only candidate selection and records artifacts", async () => {
     const trajectoryA = prompt.match(/Trajectory A:\n([\s\S]*?)\n\nTrajectory B:/)?.[1] || "";
     const trajectoryB = prompt.match(/Trajectory B:\n([\s\S]*?)\n\nRating scale:/)?.[1] || "";
     const score = (trajectory: string) => trajectory.includes("candidate 2") ? "A" : "T";
-    return new Response(JSON.stringify({
-      choices: [{
-        message: { content: `<score_A> ${score(trajectoryA)} </score_A> <score_B> ${score(trajectoryB)} </score_B>` },
-        logprobs: null,
-      }],
-    }), { status: 200, headers: { "content-type": "application/json" } });
+    return openAIResponse(score(trajectoryA), score(trajectoryB));
   };
 
   try {
@@ -337,6 +359,14 @@ test("runs a read-only candidate selection and records artifacts", async () => {
     assert.equal(result.pivots, 1);
     assert.match(result.runDir, /\.pi\/verify\/candidates\//);
     assert.match(result.trailPath, /\.pi\/verify\/trail\.jsonl$/);
+    if (process.platform !== "win32") {
+      for (const path of [join(root, ".pi", "verify"), join(root, ".pi", "verify", "candidates"), result.runDir]) {
+        assert.equal((await stat(path)).mode & 0o777, 0o700);
+      }
+      for (const path of [join(result.runDir, "problem.md"), join(result.runDir, "criteria.json"), join(result.runDir, "cand_1.md"), join(result.runDir, "winner.md"), result.trailPath]) {
+        assert.equal((await stat(path)).mode & 0o777, 0o600);
+      }
+    }
   } finally {
     globalThis.fetch = originalFetch;
     for (const [name, value] of Object.entries({
@@ -348,6 +378,73 @@ test("runs a read-only candidate selection and records artifacts", async () => {
     })) {
       if (value === undefined) delete process.env[name];
       else process.env[name] = value;
+    }
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("applies the verifier request deadline", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pi-self-verify-timeout-"));
+  await mkdir(join(root, ".git"));
+  const originalFetch = globalThis.fetch;
+  const originalTimeout = AbortSignal.timeout;
+  const original = Object.fromEntries(["VERIFIER_BASE_URL", "VERIFIER_API_KEY", "VERIFIER_MODEL"].map((name) => [name, process.env[name]]));
+  process.env.VERIFIER_BASE_URL = "http://localhost/v1";
+  process.env.VERIFIER_API_KEY = "test";
+  process.env.VERIFIER_MODEL = "test-model";
+  const timeout = new AbortController();
+  timeout.abort(new Error("deadline"));
+  (AbortSignal as unknown as { timeout: typeof AbortSignal.timeout }).timeout = (milliseconds) => {
+    assert.equal(milliseconds, 5 * 60_000);
+    return timeout.signal;
+  };
+  globalThis.fetch = async (_input, init) => {
+    assert.equal((init?.signal as AbortSignal).aborted, true);
+    throw (init?.signal as AbortSignal).reason;
+  };
+  try {
+    await assert.rejects(runSelfVerify({
+      cwd: root, task: "choose", candidateCount: 2, evals: 1, pivots: 1,
+      runCommand: async () => ({ stdout: JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "candidate" }] } }), stderr: "", code: 0 }),
+    }), /deadline/);
+  } finally {
+    globalThis.fetch = originalFetch;
+    (AbortSignal as unknown as { timeout: typeof AbortSignal.timeout }).timeout = originalTimeout;
+    for (const [name, value] of Object.entries(original)) {
+      if (value === undefined) delete process.env[name]; else process.env[name] = value;
+    }
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("reuses reversed tournament comparisons without changing the winner", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pi-self-verify-cache-"));
+  await mkdir(join(root, ".git"));
+  const originalFetch = globalThis.fetch;
+  const original = Object.fromEntries(["VERIFIER_BASE_URL", "VERIFIER_API_KEY", "VERIFIER_MODEL"].map((name) => [name, process.env[name]]));
+  process.env.VERIFIER_BASE_URL = "http://localhost/v1";
+  process.env.VERIFIER_API_KEY = "test";
+  process.env.VERIFIER_MODEL = "test-model";
+  let calls = 0;
+  let generated = 0;
+  globalThis.fetch = async (_input, init) => {
+    calls += 1;
+    const prompt = JSON.parse(String(init?.body)).messages[0].content as string;
+    const a = prompt.match(/Trajectory A:\n([\s\S]*?)\n\nTrajectory B:/)?.[1] || "";
+    const b = prompt.match(/Trajectory B:\n([\s\S]*?)\n\nRating scale:/)?.[1] || "";
+    return openAIResponse(a.includes("candidate 2") ? "A" : "T", b.includes("candidate 2") ? "A" : "T");
+  };
+  try {
+    const result = await runSelfVerify({
+      cwd: root, task: "choose", candidateCount: 2, evals: 1, pivots: 1,
+      runCommand: async () => ({ stdout: JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: `candidate ${++generated}` }] } }), stderr: "", code: 0 }),
+    });
+    assert.equal(result.winnerIndex, 1);
+    assert.equal(calls, 2);
+  } finally {
+    globalThis.fetch = originalFetch;
+    for (const [name, value] of Object.entries(original)) {
+      if (value === undefined) delete process.env[name]; else process.env[name] = value;
     }
     await rm(root, { recursive: true, force: true });
   }

@@ -10,7 +10,7 @@ description: >-
 
 Use the `self_verify` tool for a best-of-N selection pass before implementing a
 high-stakes task. It generates candidates with read-only pi subprocesses, then
-scores them through a verifier backend that returns token logprobs. The
+scores them through a verifier backend that returns token logprobs. The parent tool writes ignored `.pi/verify` selection artifacts. The
 backend can be DeepSeek, Vertex Gemini, or any compatible OpenAI-style endpoint.
 
 The result is advisory. The winning candidate still needs normal inspection,
@@ -49,8 +49,7 @@ Non-secret `verify` settings are `candidates`, `evals`, `pivots`, `model`,
 `provider`, `topLogprobs`, `maxTokens`, `effort`, `project`, `location`, and
 `thinkingBudget`; see the README for the complete JSON template. Endpoint,
 auth-provider, and credential values stay in Pi auth or the environment. The
-selected model must return token-level logprobs and top alternatives; a normal
-text judge is not equivalent.
+selected model must return usable token-level top alternatives for both score tags; literal score text and chosen-token-only responses are rejected. A normal text judge is not equivalent.
 
 Every run stores its problem, candidates, winner, and scores under
 `.pi/verify/`. These artifacts can contain sensitive task text; keep them

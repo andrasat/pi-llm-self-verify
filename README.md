@@ -3,8 +3,9 @@
 A Pi package that generates independent, read-only candidate solutions and
 selects the strongest one with a fine-grained logprob verifier.
 
-Self-verify is a **selection aid**. It does not edit files, run project tests,
-approve changes, replace independent review, or authorize commits and pushes.
+Self-verify is a **selection aid**. It does not implement or modify task files,
+run project tests, approve changes, replace independent review, or authorize
+commits and pushes. It writes the local ignored artifacts documented below.
 
 ## Install
 
@@ -17,7 +18,7 @@ pi install /absolute/path/to/pi-llm-self-verify
 Current release candidate from Git:
 
 ```bash
-pi install git:github.com/andrasat/pi-llm-self-verify@v0.1.0-rc.2
+pi install git:github.com/andrasat/pi-llm-self-verify@v0.1.0-rc.3
 ```
 
 Use `-l` with either command to write the package to the current project's
@@ -102,12 +103,14 @@ a repository settings file must not select where a stored credential is sent.
 
 Without an explicit key, the extension reuses a stored API-key credential
 configured with Pi's `/login deepseek` flow. It reads that credential through
-Pi's auth API; it does not duplicate or print the auth file. OAuth credentials
-such as `openai-codex` are valid for candidate generation, but are not
-interchangeable with a DeepSeek/OpenAI-compatible logprob API key. Vertex uses
+Pi's auth API; it does not duplicate or print the auth file. Each verifier
+request has a fixed five-minute deadline. OAuth credentials such as
+`openai-codex` are valid for candidate generation, but are not interchangeable
+with a DeepSeek/OpenAI-compatible logprob API key. Vertex uses
 `VERTEX_API_KEY` or Application Default Credentials. OpenAI-compatible remote
-endpoints must return `logprobs` and `top_logprobs`; a plain chat endpoint is
-not enough for fine-grained scoring. HTTPS is required for remote endpoints;
+endpoints must return usable token `top_logprobs` for both score tags; literal
+score text and chosen-token-only responses are rejected. A plain chat endpoint
+is not enough for fine-grained scoring. HTTPS is required for remote endpoints;
 HTTP is accepted only for localhost development. Redirects are rejected so
 credentials cannot be forwarded to another host.
 
@@ -175,8 +178,13 @@ Runs write the task, criteria, candidates, winner, and scores to:
 ```
 
 The trail is intended as a local training/evaluation record and can contain
-sensitive prompt or source text. Keep these paths ignored and review your
-project's data policy before sharing them.
+sensitive prompt or source text. On POSIX, artifact directories are enforced
+`0700` and files `0600`. Keep these paths ignored and review your project's data
+policy before sharing them.
+
+## Security and contributing
+
+See [SECURITY.md](SECURITY.md) for vulnerability reporting and [CONTRIBUTING.md](CONTRIBUTING.md) for contribution checks.
 
 ## Development
 

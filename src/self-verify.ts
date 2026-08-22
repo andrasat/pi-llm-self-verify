@@ -1,6 +1,6 @@
 import { readStoredCredential } from "@earendil-works/pi-coding-agent";
 import { randomUUID } from "node:crypto";
-import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { appendFile, chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
@@ -19,6 +19,7 @@ const MAX_CRITERIA = 4;
 const MAX_TEXT = 50_000;
 const DEFAULT_TOP_LOGPROBS = 20;
 const MAX_TOP_LOGPROBS = 20;
+const VERIFIER_REQUEST_TIMEOUT_MS = 5 * 60_000;
 const SCORE_TAGS = ["<score_A>", "<score_B>"] as const;
 
 type JsonObject = Record<string, unknown>;
@@ -537,12 +538,16 @@ async function callVerifier(
   prompt: string,
   signal?: AbortSignal,
 ): Promise<VerifierResponse> {
+  const requestSignal = AbortSignal.any([
+    AbortSignal.timeout(VERIFIER_REQUEST_TIMEOUT_MS),
+    ...(signal ? [signal] : []),
+  ]);
   return config.backend === "vertex"
-    ? callVertex(config, prompt, signal)
-    : callOpenAI(config, prompt, signal);
+    ? callVertex(config, prompt, requestSignal)
+    : callOpenAI(config, prompt, requestSignal);
 }
 
-function scoreAtTag(text: string, positions: LogprobPosition[], tag: string): number {
+function scoreAtTag(positions: LogprobPosition[], tag: string): number {
   let tokenText = "";
   let distribution: LogprobAlternative[] | undefined;
   for (let index = 0; index < positions.length; index += 1) {
@@ -551,9 +556,6 @@ function scoreAtTag(text: string, positions: LogprobPosition[], tag: string): nu
     if (!position.token?.trim()) continue;
     if ((tokenText.trimEnd().endsWith(tag) || tokenText.trimEnd().endsWith(tag.slice(0, -1))) && positions[index + 1]) {
       distribution = positions[index + 1].top_logprobs;
-      if (!distribution?.length && positions[index + 1].token) {
-        distribution = [positions[index + 1]];
-      }
     }
   }
 
@@ -561,9 +563,11 @@ function scoreAtTag(text: string, positions: LogprobPosition[], tag: string): nu
   for (const alternative of distribution || []) {
     const token = (alternative.token || "").trim().replace(/^>/, "");
     const logprob = alternative.logprob;
-    if (!/^[A-T]$/i.test(token) || typeof logprob !== "number") continue;
+    if (!/^[A-T]$/i.test(token) || typeof logprob !== "number" || !Number.isFinite(logprob)) continue;
+    const probability = Math.exp(logprob);
+    if (!Number.isFinite(probability) || probability <= 0) continue;
     const value = 20 - (token.toUpperCase().charCodeAt(0) - 65);
-    values.set(value, Math.max(values.get(value) || 0, Math.exp(logprob)));
+    values.set(value, Math.max(values.get(value) || 0, probability));
   }
   if (values.size) {
     let total = 0;
@@ -574,18 +578,13 @@ function scoreAtTag(text: string, positions: LogprobPosition[], tag: string): nu
     }
     return (expected / total - 1) / 19;
   }
-
-  const pattern = new RegExp(`${tag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*([A-T])\\s*<\\/${tag.slice(1, -1)}>`, "gi");
-  const matches = [...text.matchAll(pattern)];
-  const literal = matches.at(-1)?.[1];
-  if (literal) return (20 - (literal.toUpperCase().charCodeAt(0) - 65) - 1) / 19;
-  throw new Error(`verifier response did not include a usable ${tag} score`);
+  throw new Error(`verifier response did not include usable token top_logprobs for ${tag}`);
 }
 
 export function scoreResponse(response: VerifierResponse): [number, number] {
   return [
-    scoreAtTag(response.text, response.positions, SCORE_TAGS[0]),
-    scoreAtTag(response.text, response.positions, SCORE_TAGS[1]),
+    scoreAtTag(response.positions, SCORE_TAGS[0]),
+    scoreAtTag(response.positions, SCORE_TAGS[1]),
   ];
 }
 
@@ -641,6 +640,34 @@ export function rankFromPairs(
   const ranking = Array.from({ length: count }, (_, index) => index)
     .sort((a, b) => scores[b] - scores[a] || a - b);
   return { winnerIndex: ranking[0], ranking, scores };
+}
+
+async function secureDirectory(path: string): Promise<void> {
+  await mkdir(path, { recursive: true, mode: 0o700 });
+  await chmod(path, 0o700);
+}
+
+async function secureWrite(path: string, data: string): Promise<void> {
+  await writeFile(path, data, { encoding: "utf8", mode: 0o600 });
+  await chmod(path, 0o600);
+}
+
+async function secureAppend(path: string, data: string): Promise<void> {
+  try {
+    await chmod(path, 0o600);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  await appendFile(path, data, { encoding: "utf8", mode: 0o600 });
+  await chmod(path, 0o600);
+}
+
+function pairKey(a: number, b: number): string {
+  return a < b ? `${a}:${b}` : `${b}:${a}`;
+}
+
+function orientScore(score: [number, number], a: number, b: number): [number, number] {
+  return a < b ? score : [score[1], score[0]];
 }
 
 async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
@@ -718,11 +745,15 @@ export async function runSelfVerify(options: VerifyOptions): Promise<SelectionRe
   if (pivots > candidateCount) throw new Error("pivots cannot exceed candidateCount");
 
   const config = await verifierConfig(root, options, settings);
-  const runDir = join(root, ".pi", "verify", "candidates", `${Date.now()}-${randomUUID().slice(0, 8)}`);
-  const trailPath = join(root, ".pi", "verify", "trail.jsonl");
-  await mkdir(runDir, { recursive: true });
-  await writeFile(join(runDir, "problem.md"), options.task, "utf8");
-  await writeFile(join(runDir, "criteria.json"), JSON.stringify(Object.fromEntries(criteria.map(({ name, description }) => [name, description])), null, 2), "utf8");
+  const verifyDir = join(root, ".pi", "verify");
+  const candidatesDir = join(verifyDir, "candidates");
+  const runDir = join(candidatesDir, `${Date.now()}-${randomUUID().slice(0, 8)}`);
+  const trailPath = join(verifyDir, "trail.jsonl");
+  await secureDirectory(verifyDir);
+  await secureDirectory(candidatesDir);
+  await secureDirectory(runDir);
+  await secureWrite(join(runDir, "problem.md"), options.task);
+  await secureWrite(join(runDir, "criteria.json"), JSON.stringify(Object.fromEntries(criteria.map(({ name, description }) => [name, description])), null, 2));
   options.onProgress?.(`Generating ${candidateCount} read-only candidates...`);
 
   const candidates = await mapLimit(
@@ -735,30 +766,46 @@ export async function runSelfVerify(options: VerifyOptions): Promise<SelectionRe
       return candidate;
     },
   );
-  await Promise.all(candidates.map((candidate, index) => writeFile(join(runDir, `cand_${index + 1}.md`), candidate, "utf8")));
+  await Promise.all(candidates.map((candidate, index) => secureWrite(join(runDir, `cand_${index + 1}.md`), candidate)));
 
   const cache = new Map<string, [number, number]>();
+  const inFlight = new Map<string, Promise<[number, number]>>();
   const scorePair = async (a: number, b: number): Promise<[number, number]> => {
-    const key = `${a}:${b}`;
+    const key = pairKey(a, b);
     const existing = cache.get(key);
-    if (existing) return existing;
-    const score = await compare(config, options, options.task, candidates, a, b, criteria, evals);
-    cache.set(key, score);
-    return score;
+    if (existing) return orientScore(existing, a, b);
+    let pending = inFlight.get(key);
+    if (!pending) {
+      const [left, right] = a < b ? [a, b] : [b, a];
+      pending = compare(config, options, options.task, candidates, left, right, criteria, evals)
+        .then((score) => {
+          cache.set(key, score);
+          return score;
+        })
+        .finally(() => inFlight.delete(key));
+      inFlight.set(key, pending);
+    }
+    return orientScore(await pending, a, b);
   };
   const runPairs = async (pairs: [number, number][]) => mapLimit(pairs, 8, ([a, b]) => scorePair(a, b));
   options.onProgress?.(`Scoring candidates with ${config.model}...`);
   const ring = ringPairs(candidateCount);
-  const ringScores = await runPairs(ring);
-  const ringLookup = new Map(ring.map(([a, b], index) => [`${a}:${b}`, ringScores[index]]));
+  await runPairs(ring);
+  const ringLookup = new Map(ring.map(([a, b]) => [pairKey(a, b), cache.get(pairKey(a, b))!]));
   // Select pivots from the ring pass only; pivot-round scores do not exist yet.
-  const ringRanking = rankFromPairs(candidateCount, ring, 0, (a, b) => ringLookup.get(`${a}:${b}`) || [0.5, 0.5]);
+  const ringRanking = rankFromPairs(candidateCount, ring, 0, (a, b) => {
+    const score = ringLookup.get(pairKey(a, b));
+    return score ? orientScore(score, a, b) : [0.5, 0.5];
+  });
   const pivotSet = ringRanking.ranking.slice(0, Math.min(pivots, candidateCount));
-  const extraPairs = pivotPairs(candidateCount, pivotSet).filter(([a, b]) => !ringLookup.has(`${a}:${b}`));
+  const extraPairs = pivotPairs(candidateCount, pivotSet).filter(([a, b]) => !ringLookup.has(pairKey(a, b)));
   await runPairs(extraPairs);
-  const selected = rankFromPairs(candidateCount, ring, pivots, (a, b) => cache.get(`${a}:${b}`) || [0.5, 0.5]);
+  const selected = rankFromPairs(candidateCount, ring, pivots, (a, b) => {
+    const score = cache.get(pairKey(a, b));
+    return score ? orientScore(score, a, b) : [0.5, 0.5];
+  });
   const winner = candidates[selected.winnerIndex];
-  await writeFile(join(runDir, "winner.md"), winner, "utf8");
+  await secureWrite(join(runDir, "winner.md"), winner);
 
   const entry = {
     timestamp: new Date().toISOString(),
@@ -773,8 +820,8 @@ export async function runSelfVerify(options: VerifyOptions): Promise<SelectionRe
     winnerIndex: selected.winnerIndex,
     ranking: selected.ranking.map((index) => `cand_${index + 1}`),
   };
-  await mkdir(dirname(trailPath), { recursive: true });
-  await appendFile(trailPath, `${JSON.stringify(entry)}\n`, "utf8");
+  await secureDirectory(dirname(trailPath));
+  await secureAppend(trailPath, `${JSON.stringify(entry)}\n`);
 
   return {
     winner,
