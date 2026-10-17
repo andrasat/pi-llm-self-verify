@@ -68,7 +68,7 @@ export interface SelectionResult {
   trailPath: string;
 }
 
-interface Criterion {
+export interface Criterion {
   name: string;
   description: string;
 }
@@ -190,7 +190,7 @@ function trimText(text: string): string {
     : `${text.slice(0, MAX_TEXT)}\n\n[Candidate output truncated]`;
 }
 
-function candidatePrompt(task: string, criteria: Criterion[]): string {
+export function candidatePrompt(task: string, criteria: Criterion[]): string {
   return [
     "Produce one independent candidate solution for the task below.",
     "You are a read-only candidate generator: do not edit, write, delete, or execute project files.",
