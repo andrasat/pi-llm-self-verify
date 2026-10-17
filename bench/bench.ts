@@ -5,7 +5,7 @@
 //   npm run bench -- selfcheck           # canonical solutions must pass, a stub must fail
 //   npm run bench -- generate [--limit N] # N tasks x BENCH_CANDIDATES candidates (resumable)
 //   npm run bench -- label               # run hidden tests on every candidate
-//   npm run bench -- select deepseek|typesafe
+//   npm run bench -- select deepseek|typesafe|typesafe-correctness
 //   npm run bench -- report
 //
 // Env: DEEPSEEK_API_KEY, TYPESAFE_API_KEY, BENCH_RUN (default "default"),
@@ -261,8 +261,8 @@ async function typesafeScore(task: string, candidate: string, criteria: Criterio
   }
 }
 
-async function selectTypesafe(task: string, candidates: string[]): Promise<{ winner: number; scores: number[] }> {
-  const scores = await Promise.all(candidates.map((candidate) => typesafeScore(task, candidate, CRITERIA)));
+async function selectTypesafe(task: string, candidates: string[], criteria: Criterion[]): Promise<{ winner: number; scores: number[] }> {
+  const scores = await Promise.all(candidates.map((candidate) => typesafeScore(task, candidate, criteria)));
   return { winner: scores.indexOf(Math.max(...scores)), scores };
 }
 
@@ -288,7 +288,9 @@ async function selectDeepseek(task: string, candidates: string[], workspace: str
 }
 
 async function select(method: string): Promise<void> {
-  if (method !== "deepseek" && method !== "typesafe") throw new Error("select deepseek|typesafe");
+  // typesafe-correctness drops the Verification criterion: the best dev-split design.
+  const typesafeCriteria: Record<string, Criterion[]> = { typesafe: CRITERIA, "typesafe-correctness": CRITERIA.slice(0, 1) };
+  if (method !== "deepseek" && !typesafeCriteria[method]) throw new Error("select deepseek|typesafe|typesafe-correctness");
   const tasks = new Map((await readJsonl<Task>(DATA)).map((task) => [task.task_id, task]));
   const labels = new Map((await readJsonl<{ task_id: number; pass: boolean[] }>(join(RUN_DIR, "labels.jsonl")))
     .map((row) => [row.task_id, row.pass]));
@@ -316,7 +318,7 @@ async function select(method: string): Promise<void> {
     try {
       const picked = await taskUsage.run(counted, () => method === "deepseek"
         ? selectDeepseek(task, row.candidates, workspace)
-        : selectTypesafe(task, row.candidates));
+        : selectTypesafe(task, row.candidates, typesafeCriteria[method]));
       entry = { task_id: row.task_id, ...picked, ms: Date.now() - started, usage: { input: 0, output: 0 } };
     } catch (error) {
       entry = { task_id: row.task_id, winner: -1, scores: [], ms: Date.now() - started, usage: { input: 0, output: 0 }, error: (error as Error).message };
@@ -344,7 +346,8 @@ function bootstrap(diffs: number[], iterations = 10_000): [number, number] {
 async function report(): Promise<void> {
   const labels = new Map((await readJsonl<{ task_id: number; pass: boolean[] }>(join(RUN_DIR, "labels.jsonl")))
     .map((row) => [row.task_id, row.pass]));
-  const methods = ["deepseek", "typesafe"];
+  const methods = ["deepseek", "typesafe", "typesafe-correctness"]
+    .filter((method) => existsSync(join(RUN_DIR, `select-${method}.jsonl`)));
   const selections = new Map<string, Map<number, Selection>>();
   const failures: string[] = [];
   for (const method of methods) {
@@ -370,7 +373,7 @@ async function report(): Promise<void> {
     "",
     "Selection pass rate on mixed tasks (random = expected value of a uniform pick, oracle = 1).",
     "",
-    "| Split | n | Random | DeepSeek pairwise | TypeSafe pointwise | TypeSafe − DeepSeek (95% CI) |",
+    "| Split | n | Method | Pass rate | vs random (95% CI) | vs deepseek (95% CI) |",
     "| --- | --- | --- | --- | --- | --- |",
   ];
   for (const [split, keep] of [["dev", isDev], ["test", (id: number) => !isDev(id)], ["all", () => true]] as const) {
@@ -378,13 +381,19 @@ async function report(): Promise<void> {
     if (!subset.length) continue;
     const pick = (method: string, id: number) => Number(labels.get(id)![selections.get(method)!.get(id)!.winner]);
     const random = subset.map((id) => labels.get(id)!.filter(Boolean).length / labels.get(id)!.length);
-    const deepseek = subset.map((id) => pick("deepseek", id));
-    const typesafe = subset.map((id) => pick("typesafe", id));
     const mean = (values: number[]) => values.reduce((sum, value) => sum + value, 0) / values.length;
-    const diffs = typesafe.map((value, index) => value - deepseek[index]);
-    const [low, high] = bootstrap(diffs);
     const pct = (value: number) => `${(value * 100).toFixed(1)}%`;
-    lines.push(`| ${split} | ${subset.length} | ${pct(mean(random))} | ${pct(mean(deepseek))} | ${pct(mean(typesafe))} | ${pct(mean(diffs))} (${pct(low)} to ${pct(high)}) |`);
+    const versus = (picked: number[], baseline: number[]) => {
+      const diffs = picked.map((value, index) => value - baseline[index]);
+      const [low, high] = bootstrap(diffs);
+      return `${pct(mean(diffs))} (${pct(low)} to ${pct(high)})`;
+    };
+    const deepseek = subset.map((id) => pick("deepseek", id));
+    lines.push(`| ${split} | ${subset.length} | random | ${pct(mean(random))} | | |`);
+    for (const method of methods) {
+      const picked = subset.map((id) => pick(method, id));
+      lines.push(`| ${split} | ${subset.length} | ${method} | ${pct(mean(picked))} | ${versus(picked, random)} | ${method === "deepseek" ? "" : versus(picked, deepseek)} |`);
+    }
   }
   lines.push("", "| Method | Input tokens | Output tokens | Median ms per task |", "| --- | --- | --- | --- |");
   for (const method of methods) {
