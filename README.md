@@ -7,6 +7,17 @@ Self-verify is a **selection aid**. It does not implement or modify task files,
 run project tests, approve changes, replace independent review, or authorize
 commits and pushes. It writes the local ignored artifacts documented below.
 
+## Does it help?
+
+![Self-verify picks a passing candidate 68.5% of the time on MBPP+ and 75.5% on HumanEval+, against 57.1% and 64.2% for a random pick](docs/benchmark.svg)
+
+On coding tasks where the four candidates disagree, the default verifier picks
+a candidate that passes the hidden tests about 11 points more often than a
+random pick. When every candidate passes, or none does, selection cannot change
+the outcome, so the gain across all tasks is smaller. On HumanEval+ the 95%
+interval still reaches slightly below zero. Run `npm run bench` to reproduce
+these numbers (see [Benchmark](#benchmark)).
+
 ## Install
 
 From this repository while developing:
@@ -89,7 +100,7 @@ a repository settings file must not select where a stored credential is sent.
 | `VERIFIER_EVALS` | `evals` | Repeated evaluations |
 | `VERIFIER_PIVOTS` | `pivots` | Tournament pivots |
 | — | `candidates` | Candidate count, `2`–`5`; tool argument is `candidates` |
-| `DEEPSEEK_EFFORT` | `effort` | DeepSeek reasoning effort (`off`, `low`, `high`, `max`) |
+| `DEEPSEEK_EFFORT` | `effort` | DeepSeek reasoning effort (`off`, `low`, `high`, `max`); `high` is the default, and lower settings select less accurately |
 | `DEEPSEEK_MAX_TOKENS` | `maxTokens` | DeepSeek output budget compatibility alias |
 | `GOOGLE_CLOUD_PROJECT` or `VERTEX_PROJECT` | `project` | Vertex project id |
 | `GOOGLE_CLOUD_LOCATION` or `VERTEX_LOCATION` | `location` | Vertex location, normally `global` |
@@ -97,7 +108,7 @@ a repository settings file must not select where a stored credential is sent.
 | `VERIFIER_BASE_URL` or `OPENAI_BASE_URL` | — | OpenAI-compatible `/v1` or `/chat/completions` base; environment only |
 | `VERIFIER_AUTH_PROVIDER` | — | Explicit Pi `/login` provider id for stored API-key reuse with a custom HTTPS endpoint; environment only |
 | `VERTEX_BASE_URL` | — | Full Vertex `:generateContent` URL; environment only |
-| `VERIFIER_API_KEY`, `OPENAI_API_KEY`, or `DEEPSEEK_API_KEY` | — | OpenAI-compatible API key; environment/Pi auth only |
+| `VERIFIER_API_KEY`, `OPENAI_API_KEY`, or `DEEPSEEK_API_KEY` | — | OpenAI-compatible API key; environment/Pi auth only. `VERIFIER_API_KEY` goes to any verifier endpoint; `DEEPSEEK_API_KEY` only to `api.deepseek.com`; `OPENAI_API_KEY` only to `api.openai.com` or the `OPENAI_BASE_URL` endpoint |
 | `VERTEX_API_KEY` or `GOOGLE_API_KEY` | — | Vertex API key; environment only |
 | `VERTEX_ACCESS_TOKEN` or `GOOGLE_OAUTH_ACCESS_TOKEN` | — | Vertex OAuth access token; environment only |
 
@@ -118,6 +129,14 @@ Candidate generation uses the current Pi model and only enables `read`,
 `grep`, `find`, and `ls`. The verifier uses the configured endpoint directly.
 
 ## Verifier backends
+
+**TypeSafe (optional, cheap).** Set `VERIFIER_PROVIDER=typesafe` and
+`TYPESAFE_API_KEY` to score each candidate with a TypeSafe Jev model (default
+`jev-1.13.0`, override with `VERIFIER_MODEL=jev-*`). It asks one Correctness
+question per candidate instead of running a pairwise tournament, so `evals` and
+`pivots` do not apply. On the benchmark it gained about as much over a random
+pick as the DeepSeek verifier (+8 to +11 points, wide intervals) at roughly
+1/150 of the cost. DeepSeek remains the default.
 
 The verifier accepts any OpenAI-compatible endpoint that returns
 `choices[0].logprobs.content` and `top_logprobs`:
@@ -196,6 +215,27 @@ npm run check
 `npm run check` runs TypeScript checking, the built-in test suite, and an npm
 package dry run. Pi loads the TypeScript entry point directly; no build step or
 runtime dependency is bundled.
+
+### Benchmark
+
+`bench/bench.ts` measures how often a verifier picks a candidate that passes the
+hidden tests of MBPP+ or HumanEval+ (`BENCH_DATASET=humanevalplus`). It is
+development-only and not part of the published package. It needs `uv`,
+`DEEPSEEK_API_KEY`, and network access, and it runs model-written Python
+locally without a sandbox.
+
+```bash
+npm run bench -- setup && npm run bench -- fetch && npm run bench -- selfcheck
+BENCH_RUN=nothink BENCH_CANDIDATE_EFFORT=off npm run bench -- generate
+BENCH_RUN=nothink npm run bench -- label
+BENCH_RUN=nothink npm run bench -- select deepseek
+BENCH_RUN=nothink npm run bench -- report
+```
+
+The chart above uses candidates generated with thinking off, which makes enough
+candidates fail for selection to matter. Comparisons count only tasks where some
+candidates pass and some fail. Before running `select`, check the top of
+`bench/bench.ts` for the list of verifier methods and their API costs.
 
 ## Agentic engineering contract
 

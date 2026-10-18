@@ -4,3 +4,6 @@ dist/
 coverage/
 .pi/verify/candidates/
 .pi/verify/trail.jsonl
+bench/.venv/
+bench/data/
+bench/runs/

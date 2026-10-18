@@ -26,6 +26,7 @@
   "scripts": {
     "test": "tsx --test test/*.test.ts",
     "typecheck": "tsc --noEmit",
+    "bench": "tsx bench/bench.ts",
     "check": "npm run typecheck && npm test && npm pack --dry-run"
   },
   "pi": {
