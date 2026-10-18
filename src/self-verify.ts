@@ -343,8 +343,9 @@ async function verifierConfig(root: string, options: VerifyOptions, settings?: J
   if (requestedProvider?.toLowerCase() === "typesafe") {
     const model = configuredModel || DEFAULT_TYPESAFE_MODEL;
     if (!model.startsWith("jev-")) throw new Error("TypeSafe verifier models must be named jev-*");
-    const apiKey = process.env.TYPESAFE_API_KEY;
-    if (!apiKey) throw new Error("set TYPESAFE_API_KEY for the TypeSafe verifier");
+    // The host is fixed, so a stored /login key cannot be sent elsewhere.
+    const apiKey = process.env.TYPESAFE_API_KEY || readAuthKey("typesafe");
+    if (!apiKey) throw new Error("set TYPESAFE_API_KEY or run /login typesafe for the TypeSafe verifier");
     return {
       backend: "typesafe",
       provider: "typesafe",

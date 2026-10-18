@@ -1,8 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.1.0-rc.5 - 2026-10-18
 
-- Add an optional TypeSafe verifier backend (`VERIFIER_PROVIDER=typesafe`).
+- Add an optional TypeSafe verifier backend (`VERIFIER_PROVIDER=typesafe`). It
+  reads `TYPESAFE_API_KEY` or the key stored by `/login typesafe`.
 - Send `DEEPSEEK_API_KEY` only to `api.deepseek.com`, and `OPENAI_API_KEY` only to
   `api.openai.com` or the `OPENAI_BASE_URL` endpoint. Before, either key could be
   sent to any custom `VERIFIER_BASE_URL`. Use `VERIFIER_API_KEY` for other endpoints.

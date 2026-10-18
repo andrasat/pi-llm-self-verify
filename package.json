@@ -1,6 +1,6 @@
 {
   "name": "pi-llm-self-verify",
-  "version": "0.1.0-rc.4",
+  "version": "0.1.0-rc.5",
   "description": "Best-of-N self-verification for pi coding-agent",
   "type": "module",
   "keywords": [
