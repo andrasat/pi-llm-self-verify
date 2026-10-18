@@ -1,11 +1,11 @@
 // Selection benchmark: does a verifier pick candidates that pass hidden tests?
 //
 //   npm run bench -- setup               # uv venv with numpy for MBPP+ tests
-//   npm run bench -- fetch               # download MBPP+ (378 tasks)
+//   npm run bench -- fetch               # download MBPP+ (378 tasks); BENCH_DATASET=humanevalplus for HumanEval+ (164)
 //   npm run bench -- selfcheck           # canonical solutions must pass, a stub must fail
 //   npm run bench -- generate [--limit N] # N tasks x BENCH_CANDIDATES candidates (resumable)
 //   npm run bench -- label               # run hidden tests on every candidate
-//   npm run bench -- select deepseek|deepseek-off|deepseek-low|deepseek-evals1|glm|prefilter|typesafe|typesafe-correctness
+//   npm run bench -- select deepseek|deepseek-off|deepseek-low|deepseek-evals1|glm|prefilter|typesafe|typesafe-correctness|typesafe-preview
 //   npm run bench -- report
 //
 // Env: DEEPSEEK_API_KEY, TYPESAFE_API_KEY, BENCH_RUN (default "default"),
@@ -33,8 +33,10 @@ import {
 
 const run = promisify(execFile);
 const BENCH = dirname(fileURLToPath(import.meta.url));
-const DATA = join(BENCH, "data", "mbppplus.jsonl");
-const EXCLUDED = join(BENCH, "data", "excluded.json");
+// BENCH_DATASET=humanevalplus gives a fresh task set for confirming results tuned on MBPP+.
+const DATASET = process.env.BENCH_DATASET || "mbppplus";
+const DATA = join(BENCH, "data", `${DATASET}.jsonl`);
+const EXCLUDED = join(BENCH, "data", DATASET === "mbppplus" ? "excluded.json" : `excluded-${DATASET}.json`);
 const RUN_DIR = join(BENCH, "runs", process.env.BENCH_RUN || "default");
 const VENV = join(BENCH, ".venv");
 const PYTHON = process.platform === "win32" ? join(VENV, "Scripts", "python.exe") : join(VENV, "bin", "python");
@@ -45,7 +47,7 @@ const CANDIDATES = Number(process.env.BENCH_CANDIDATES || 4);
 const CANDIDATE_EFFORT = process.env.BENCH_CANDIDATE_EFFORT || "low";
 const CRITERIA = normalizeCriteria(DEFAULT_CRITERIA);
 
-interface Task { task_id: number; prompt: string; code: string; test_list: string[]; test: string }
+interface Task { task_id: number; prompt: string; code: string; test_list: string[]; test: string; entry_point?: string }
 interface Usage { input: number; output: number }
 interface Selection { task_id: number; winner: number; scores: number[]; ms: number; usage: Usage; error?: string }
 
@@ -94,7 +96,8 @@ async function mapLimit<T>(items: T[], limit: number, fn: (item: T) => Promise<v
 
 // MBPP convention: the first assert fixes the function name and signature.
 function taskText(task: Task): string {
-  return `${task.prompt}\nYour code should pass this test:\n${task.test_list[0]}\n`
+  const example = task.test_list[0] ? `Your code should pass this test:\n${task.test_list[0]}\n` : "";
+  return `${task.entry_point ? "Complete this Python function:\n" : ""}${task.prompt}\n${example}`
     + "Return the complete Python solution in one ```python code block.";
 }
 
@@ -124,10 +127,14 @@ async function setup(): Promise<void> {
 async function fetchDataset(): Promise<void> {
   const rows: Task[] = [];
   for (let offset = 0; ; offset += 100) {
-    const response = await fetch(`https://datasets-server.huggingface.co/rows?dataset=evalplus/mbppplus&config=default&split=test&offset=${offset}&length=100`);
+    const response = await fetch(`https://datasets-server.huggingface.co/rows?dataset=evalplus/${DATASET}&config=default&split=test&offset=${offset}&length=100`);
     if (!response.ok) throw new Error(`dataset fetch failed (${response.status})`);
-    const page = await response.json() as { rows: { row: Task }[] };
-    rows.push(...page.rows.map(({ row }) => ({ task_id: row.task_id, prompt: row.prompt, code: row.code, test_list: row.test_list, test: row.test })));
+    const page = await response.json() as { rows: { row: Record<string, string> & Task }[] };
+    rows.push(...page.rows.map(({ row }) => row.entry_point
+      // HumanEval+: the prompt is a signature plus docstring; `check` runs the plus inputs.
+      ? { task_id: Number(String(row.task_id).split("/")[1]), prompt: row.prompt, code: row.prompt + row.canonical_solution, test_list: [],
+        test: `${row.test}\ncheck(${row.entry_point})`, entry_point: row.entry_point }
+      : { task_id: row.task_id, prompt: row.prompt, code: row.code, test_list: row.test_list, test: row.test }));
     if (page.rows.length < 100) break;
   }
   await mkdir(dirname(DATA), { recursive: true });
@@ -201,7 +208,7 @@ async function selfcheck(): Promise<void> {
   const tasks = await readJsonl<Task>(DATA);
   const failed: number[] = [];
   await mapLimit(tasks, 8, async (task) => {
-    const name = /def\s+(\w+)/.exec(task.code)?.[1] ?? "missing";
+    const name = task.entry_point ?? /def\s+(\w+)/.exec(task.code)?.[1] ?? "missing";
     const canonical = await passes(task, extractCode("Solution:\n```python\n" + task.code + "\n```"));
     const stub = await passes(task, `def ${name}(*args, **kwargs):\n    return None\n`);
     if (!canonical || stub) failed.push(task.task_id);
@@ -236,7 +243,7 @@ const LEVELS = [
 ];
 
 // Prototype of the proposed backend: one request per candidate, one Score per criterion.
-async function typesafeScore(task: string, candidate: string, criteria: Criterion[]): Promise<number> {
+async function typesafeScore(task: string, candidate: string, criteria: Criterion[], model = TYPESAFE_MODEL): Promise<number> {
   const key = process.env.TYPESAFE_API_KEY;
   if (!key) throw new Error("set TYPESAFE_API_KEY");
   const questions = Object.fromEntries(criteria.map(({ name, description }, index) => [`c${index}`, {
@@ -251,7 +258,7 @@ async function typesafeScore(task: string, candidate: string, criteria: Criterio
     const response = await fetch("https://api.typesafe.ai/v1/systemone", {
       method: "POST",
       headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
-      body: JSON.stringify({ model: TYPESAFE_MODEL, state: { task, candidate_solution: candidate }, questions }),
+      body: JSON.stringify({ model, state: { task, candidate_solution: candidate }, questions }),
       redirect: "error",
       signal: AbortSignal.timeout(5 * 60_000),
     });
@@ -266,8 +273,8 @@ async function typesafeScore(task: string, candidate: string, criteria: Criterio
   }
 }
 
-async function selectTypesafe(task: string, candidates: string[], criteria: Criterion[]): Promise<{ winner: number; scores: number[] }> {
-  const scores = await Promise.all(candidates.map((candidate) => typesafeScore(task, candidate, criteria)));
+async function selectTypesafe(task: string, candidates: string[], criteria: Criterion[], model?: string): Promise<{ winner: number; scores: number[] }> {
+  const scores = await Promise.all(candidates.map((candidate) => typesafeScore(task, candidate, criteria, model)));
   return { winner: scores.indexOf(Math.max(...scores)), scores };
 }
 
@@ -303,7 +310,7 @@ async function selectPrefilter(task: string, candidates: string[], workspace: st
 
 async function select(method: string): Promise<void> {
   // typesafe-correctness drops the Verification criterion: the best dev-split design.
-  const typesafeCriteria: Record<string, Criterion[]> = { typesafe: CRITERIA, "typesafe-correctness": CRITERIA.slice(0, 1) };
+  const typesafeCriteria: Record<string, Criterion[]> = { typesafe: CRITERIA, "typesafe-correctness": CRITERIA.slice(0, 1), "typesafe-preview": CRITERIA.slice(0, 1) };
   // Cheaper DeepSeek settings, each against the production default.
   const deepseekVariants: Record<string, { effort?: string; evals?: number; model?: string }> = {
     deepseek: {}, "deepseek-off": { effort: "off" }, "deepseek-low": { effort: "low" }, "deepseek-evals1": { evals: 1 },
@@ -348,7 +355,7 @@ async function select(method: string): Promise<void> {
       const picked = await taskUsage.run(counted, () => variant
         ? selectDeepseek(task, row.candidates, workspace, variant.evals, variant.model)
         : method === "prefilter" ? selectPrefilter(task, row.candidates, workspace)
-        : selectTypesafe(task, row.candidates, typesafeCriteria[method]));
+        : selectTypesafe(task, row.candidates, typesafeCriteria[method], method === "typesafe-preview" ? "jev-preview" : undefined));
       entry = { task_id: row.task_id, ...picked, ms: Date.now() - started, usage: { input: 0, output: 0 } };
     } catch (error) {
       entry = { task_id: row.task_id, winner: -1, scores: [], ms: Date.now() - started, usage: { input: 0, output: 0 }, error: (error as Error).message };
@@ -376,7 +383,7 @@ function bootstrap(diffs: number[], iterations = 10_000): [number, number] {
 async function report(): Promise<void> {
   const labels = new Map((await readJsonl<{ task_id: number; pass: boolean[] }>(join(RUN_DIR, "labels.jsonl")))
     .map((row) => [row.task_id, row.pass]));
-  const methods = ["deepseek", "deepseek-off", "deepseek-low", "deepseek-evals1", "glm", "prefilter", "typesafe", "typesafe-correctness"]
+  const methods = ["deepseek", "deepseek-off", "deepseek-low", "deepseek-evals1", "glm", "prefilter", "typesafe", "typesafe-correctness", "typesafe-preview"]
     .filter((method) => existsSync(join(RUN_DIR, `select-${method}.jsonl`)));
   const selections = new Map<string, Map<number, Selection>>();
   const failures: string[] = [];
@@ -418,11 +425,11 @@ async function report(): Promise<void> {
       const [low, high] = bootstrap(diffs);
       return `${pct(mean(diffs))} (${pct(low)} to ${pct(high)})`;
     };
-    const deepseek = subset.map((id) => pick("deepseek", id));
+    const deepseek = selections.has("deepseek") ? subset.map((id) => pick("deepseek", id)) : undefined;
     lines.push(`| ${split} | ${subset.length} | random | ${pct(mean(random))} | | |`);
     for (const method of methods) {
       const picked = subset.map((id) => pick(method, id));
-      lines.push(`| ${split} | ${subset.length} | ${method} | ${pct(mean(picked))} | ${versus(picked, random)} | ${method === "deepseek" ? "" : versus(picked, deepseek)} |`);
+      lines.push(`| ${split} | ${subset.length} | ${method} | ${pct(mean(picked))} | ${versus(picked, random)} | ${method === "deepseek" || !deepseek ? "" : versus(picked, deepseek)} |`);
     }
   }
   lines.push("", "| Method | Input tokens | Output tokens | Median ms per task |", "| --- | --- | --- | --- |");
