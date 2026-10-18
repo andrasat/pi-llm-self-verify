@@ -7,6 +7,17 @@ Self-verify is a **selection aid**. It does not implement or modify task files,
 run project tests, approve changes, replace independent review, or authorize
 commits and pushes. It writes the local ignored artifacts documented below.
 
+## Does it help?
+
+![Self-verify picks a passing candidate 68.5% of the time on MBPP+ and 75.5% on HumanEval+, against 57.1% and 64.2% for a random pick](docs/benchmark.svg)
+
+On coding tasks where the four candidates disagree, the default verifier picks
+a candidate that passes the hidden tests about 11 points more often than a
+random pick. When every candidate passes, or none does, selection cannot change
+the outcome, so the gain across all tasks is smaller. On HumanEval+ the 95%
+interval still reaches slightly below zero. Run `npm run bench` to reproduce
+these numbers (see [Benchmark](#benchmark)).
+
 ## Install
 
 From this repository while developing:
@@ -89,7 +100,7 @@ a repository settings file must not select where a stored credential is sent.
 | `VERIFIER_EVALS` | `evals` | Repeated evaluations |
 | `VERIFIER_PIVOTS` | `pivots` | Tournament pivots |
 | — | `candidates` | Candidate count, `2`–`5`; tool argument is `candidates` |
-| `DEEPSEEK_EFFORT` | `effort` | DeepSeek reasoning effort (`off`, `low`, `high`, `max`) |
+| `DEEPSEEK_EFFORT` | `effort` | DeepSeek reasoning effort (`off`, `low`, `high`, `max`); `high` is the default, and lower settings select less accurately |
 | `DEEPSEEK_MAX_TOKENS` | `maxTokens` | DeepSeek output budget compatibility alias |
 | `GOOGLE_CLOUD_PROJECT` or `VERTEX_PROJECT` | `project` | Vertex project id |
 | `GOOGLE_CLOUD_LOCATION` or `VERTEX_LOCATION` | `location` | Vertex location, normally `global` |
@@ -196,6 +207,27 @@ npm run check
 `npm run check` runs TypeScript checking, the built-in test suite, and an npm
 package dry run. Pi loads the TypeScript entry point directly; no build step or
 runtime dependency is bundled.
+
+### Benchmark
+
+`bench/bench.ts` measures how often a verifier picks a candidate that passes the
+hidden tests of MBPP+ or HumanEval+ (`BENCH_DATASET=humanevalplus`). It is
+development-only and not part of the published package. It needs `uv`,
+`DEEPSEEK_API_KEY`, and network access, and it runs model-written Python
+locally without a sandbox.
+
+```bash
+npm run bench -- setup && npm run bench -- fetch && npm run bench -- selfcheck
+BENCH_RUN=nothink BENCH_CANDIDATE_EFFORT=off npm run bench -- generate
+BENCH_RUN=nothink npm run bench -- label
+BENCH_RUN=nothink npm run bench -- select deepseek
+BENCH_RUN=nothink npm run bench -- report
+```
+
+The chart above uses candidates generated with thinking off, which makes enough
+candidates fail for selection to matter. Comparisons count only tasks where some
+candidates pass and some fail. Before running `select`, check the top of
+`bench/bench.ts` for the list of verifier methods and their API costs.
 
 ## Agentic engineering contract
 

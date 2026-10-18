@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Send `thinking: disabled` to DeepSeek when the verifier effort is `off`. Before,
+  `off` left DeepSeek's default thinking on. On the benchmark, a verifier with no
+  thinking picks no better than random, so `off` is not recommended.
+- Add a development-only selection benchmark (`npm run bench`) and a README chart
+  of its results.
+
 ## 0.1.0-rc.4 - 2026-08-22
 
 - Update the development-only `tsx`/`esbuild` toolchain to resolve GHSA-67mh-4wv8-2f99.
