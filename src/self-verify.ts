@@ -933,7 +933,9 @@ export function formatSelection(result: SelectionResult): string {
     .join(", ");
   return [
     `Self-verify selected candidate ${result.winnerIndex + 1}/${result.candidates.length}.`,
-    `Verifier: ${result.model}; evaluations: ${result.evals}; pivots: ${result.pivots}.`,
+    result.model.startsWith("jev-")
+      ? `Verifier: ${result.model} (TypeSafe, one score per candidate).`
+      : `Verifier: ${result.model}; evaluations: ${result.evals}; pivots: ${result.pivots}.`,
     `Ranking: ${ranking}`,
     "",
     "Winning candidate:",
