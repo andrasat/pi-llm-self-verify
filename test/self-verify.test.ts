@@ -357,6 +357,16 @@ test("uses Vertex response logprobs when configured", async () => {
         code: 0,
       }),
     }), /top_logprobs.*score_A/);
+
+    // A location such as "evil.example#" would otherwise move the request, and the token, to another host.
+    await writeFile(join(root, ".pi", "settings.json"), JSON.stringify({ verify: { project: "test-project", location: "evil.example#" } }));
+    globalThis.fetch = async () => assert.fail("no request may be sent for an invalid location");
+    await assert.rejects(runSelfVerify({
+      cwd: root,
+      task: "reject a host-changing location",
+      candidateCount: 2,
+      runCommand: async () => assert.fail("no candidates before the verifier is configured"),
+    }), /Vertex location/);
   } finally {
     globalThis.fetch = originalFetch;
     for (const [name, value] of Object.entries(original)) {
@@ -403,7 +413,10 @@ test("runs a read-only candidate selection and records artifacts", async () => {
       task: "choose a candidate",
       candidateCount: 3,
       topLogprobs: 5,
-      runCommand: async () => {
+      runCommand: async (_command, args) => {
+        // Candidates must not load project resources or extensions, even in a trusted project.
+        assert.ok(args.includes("--no-approve") && args.includes("--no-extensions"));
+        assert.ok(!args.includes("--approve"));
         generated += 1;
         return {
           stdout: JSON.stringify({
