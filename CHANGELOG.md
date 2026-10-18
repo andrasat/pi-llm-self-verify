@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Add an optional TypeSafe verifier backend (`VERIFIER_PROVIDER=typesafe`).
 - Send `DEEPSEEK_API_KEY` only to `api.deepseek.com`, and `OPENAI_API_KEY` only to
   `api.openai.com` or the `OPENAI_BASE_URL` endpoint. Before, either key could be
   sent to any custom `VERIFIER_BASE_URL`. Use `VERIFIER_API_KEY` for other endpoints.

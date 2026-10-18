@@ -21,6 +21,15 @@ const DEFAULT_TOP_LOGPROBS = 20;
 const MAX_TOP_LOGPROBS = 20;
 const VERIFIER_REQUEST_TIMEOUT_MS = 5 * 60_000;
 const SCORE_TAGS = ["<score_A>", "<score_B>"] as const;
+const TYPESAFE_URL = "https://api.typesafe.ai/v1/systemone";
+// Pinned: aliases such as jev-latest move to new versions without notice.
+const DEFAULT_TYPESAFE_MODEL = "jev-1.13.0";
+const TYPESAFE_LEVELS = [
+  "Fails the criterion",
+  "Partly meets the criterion, with significant gaps or bugs",
+  "Mostly meets the criterion, with minor gaps",
+  "Fully meets the criterion",
+];
 
 type JsonObject = Record<string, unknown>;
 
@@ -74,7 +83,7 @@ export interface Criterion {
 }
 
 interface VerifierConfig {
-  backend: "openai" | "vertex";
+  backend: "openai" | "vertex" | "typesafe";
   provider: string;
   model: string;
   url: string;
@@ -323,14 +332,30 @@ function vertexEndpoint(model: string, settings: JsonObject): string {
 
 async function verifierConfig(root: string, options: VerifyOptions, settings?: JsonObject): Promise<VerifierConfig> {
   const effectiveSettings = settings || await readSettings(root);
-  const effectiveModel = options.verifierModel
+  const configuredModel = options.verifierModel
     || process.env.VERIFIER_MODEL
-    || (typeof effectiveSettings.model === "string" ? effectiveSettings.model : undefined)
-    || "deepseek-v4-flash";
+    || (typeof effectiveSettings.model === "string" ? effectiveSettings.model : undefined);
+  const effectiveModel = configuredModel || "deepseek-v4-flash";
   const explicitBase = process.env.VERIFIER_BASE_URL || process.env.OPENAI_BASE_URL;
   const requestedProvider = options.verifierProvider
     || process.env.VERIFIER_PROVIDER
     || (typeof effectiveSettings.provider === "string" ? effectiveSettings.provider : undefined);
+  if (requestedProvider?.toLowerCase() === "typesafe") {
+    const model = configuredModel || DEFAULT_TYPESAFE_MODEL;
+    if (!model.startsWith("jev-")) throw new Error("TypeSafe verifier models must be named jev-*");
+    const apiKey = process.env.TYPESAFE_API_KEY;
+    if (!apiKey) throw new Error("set TYPESAFE_API_KEY for the TypeSafe verifier");
+    return {
+      backend: "typesafe",
+      provider: "typesafe",
+      model,
+      url: TYPESAFE_URL,
+      apiKey,
+      maxTokens: 0,
+      topLogprobs: 0,
+      thinking: false,
+    };
+  }
   const backend = isVertexProvider(requestedProvider)
     || (!requestedProvider && !explicitBase && effectiveModel.startsWith("gemini-"))
     ? "vertex" : "openai";
@@ -736,6 +761,37 @@ async function compare(
   return [totalA / count, totalB / count];
 }
 
+// TypeSafe scores one candidate at a time: a Score question per criterion, averaged to 0..1.
+async function typesafeScore(
+  config: VerifierConfig,
+  task: string,
+  candidate: string,
+  criteria: Criterion[],
+  signal?: AbortSignal,
+): Promise<number> {
+  const questions = Object.fromEntries(criteria.map(({ name, description }, index) => [`c${index}`, {
+    type: "score",
+    instructions: {
+      criterion: `${name}: ${description}`,
+      question: "How well does `candidate_solution` meet `criterion` for `task`? Check the code against what `task` asks.",
+    },
+    criteria: TYPESAFE_LEVELS,
+  }]));
+  const response = await fetch(config.url, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${config.apiKey}` },
+    body: JSON.stringify({ model: config.model, state: { task, candidate_solution: candidate }, questions }),
+    redirect: "error",
+    signal: AbortSignal.any([AbortSignal.timeout(VERIFIER_REQUEST_TIMEOUT_MS), ...(signal ? [signal] : [])]),
+  });
+  const answers = (await jsonResponse(response, "TypeSafe verifier")).answers as Record<string, { score?: unknown }> | undefined;
+  const scores = criteria.map((_, index) => answers?.[`c${index}`]?.score);
+  if (!scores.every((score): score is number => typeof score === "number" && Number.isFinite(score))) {
+    throw new Error("TypeSafe verifier response did not include a score for every criterion");
+  }
+  return scores.reduce((sum, score) => sum + score / (TYPESAFE_LEVELS.length - 1), 0) / scores.length;
+}
+
 export async function runSelfVerify(options: VerifyOptions): Promise<SelectionResult> {
   if (!options.task.trim()) throw new Error("task must not be empty");
   const root = findProjectRoot(options.cwd);
@@ -773,6 +829,66 @@ export async function runSelfVerify(options: VerifyOptions): Promise<SelectionRe
   );
   await Promise.all(candidates.map((candidate, index) => secureWrite(join(runDir, `cand_${index + 1}.md`), candidate)));
 
+  const selected = config.backend === "typesafe"
+    ? await rankWithTypesafe(config, options, candidates, criteria)
+    : await rankWithTournament(config, options, candidates, criteria, evals, pivots);
+  const winner = candidates[selected.winnerIndex];
+  await secureWrite(join(runDir, "winner.md"), winner);
+
+  const entry = {
+    timestamp: new Date().toISOString(),
+    project: basename(root),
+    model: config.model,
+    evals,
+    pivots,
+    criteria: Object.fromEntries(criteria.map(({ name, description }) => [name, description])),
+    problem: options.task,
+    candidates,
+    scores: Object.fromEntries(selected.scores.map((score, index) => [`cand_${index + 1}`, Number(score.toFixed(4))])),
+    winnerIndex: selected.winnerIndex,
+    ranking: selected.ranking.map((index) => `cand_${index + 1}`),
+  };
+  await secureDirectory(dirname(trailPath));
+  await secureAppend(trailPath, `${JSON.stringify(entry)}\n`);
+
+  return {
+    winner,
+    winnerIndex: selected.winnerIndex,
+    candidates,
+    ranking: selected.ranking,
+    scores: selected.scores,
+    model: config.model,
+    evals,
+    pivots,
+    runDir,
+    trailPath,
+  };
+}
+
+async function rankWithTypesafe(
+  config: VerifierConfig,
+  options: VerifyOptions,
+  candidates: string[],
+  criteria: Criterion[],
+): Promise<{ winnerIndex: number; ranking: number[]; scores: number[] }> {
+  // On the benchmark, Correctness alone selected best; custom criteria are used as given.
+  const scoring = options.criteria ? criteria : criteria.filter(({ name }) => name === "Correctness");
+  options.onProgress?.(`Scoring candidates with ${config.model}...`);
+  const scores = await Promise.all(candidates.map((candidate) =>
+    typesafeScore(config, options.task, candidate, scoring, options.signal)));
+  const ranking = scores.map((_, index) => index).sort((a, b) => scores[b] - scores[a] || a - b);
+  return { winnerIndex: ranking[0], ranking, scores };
+}
+
+async function rankWithTournament(
+  config: VerifierConfig,
+  options: VerifyOptions,
+  candidates: string[],
+  criteria: Criterion[],
+  evals: number,
+  pivots: number,
+): Promise<{ winnerIndex: number; ranking: number[]; scores: number[] }> {
+  const candidateCount = candidates.length;
   const cache = new Map<string, [number, number]>();
   const inFlight = new Map<string, Promise<[number, number]>>();
   const scorePair = async (a: number, b: number): Promise<[number, number]> => {
@@ -805,41 +921,10 @@ export async function runSelfVerify(options: VerifyOptions): Promise<SelectionRe
   const pivotSet = ringRanking.ranking.slice(0, Math.min(pivots, candidateCount));
   const extraPairs = pivotPairs(candidateCount, pivotSet).filter(([a, b]) => !ringLookup.has(pairKey(a, b)));
   await runPairs(extraPairs);
-  const selected = rankFromPairs(candidateCount, ring, pivots, (a, b) => {
+  return rankFromPairs(candidateCount, ring, pivots, (a, b) => {
     const score = cache.get(pairKey(a, b));
     return score ? orientScore(score, a, b) : [0.5, 0.5];
   });
-  const winner = candidates[selected.winnerIndex];
-  await secureWrite(join(runDir, "winner.md"), winner);
-
-  const entry = {
-    timestamp: new Date().toISOString(),
-    project: basename(root),
-    model: config.model,
-    evals,
-    pivots,
-    criteria: Object.fromEntries(criteria.map(({ name, description }) => [name, description])),
-    problem: options.task,
-    candidates,
-    scores: Object.fromEntries(selected.scores.map((score, index) => [`cand_${index + 1}`, Number(score.toFixed(4))])),
-    winnerIndex: selected.winnerIndex,
-    ranking: selected.ranking.map((index) => `cand_${index + 1}`),
-  };
-  await secureDirectory(dirname(trailPath));
-  await secureAppend(trailPath, `${JSON.stringify(entry)}\n`);
-
-  return {
-    winner,
-    winnerIndex: selected.winnerIndex,
-    candidates,
-    ranking: selected.ranking,
-    scores: selected.scores,
-    model: config.model,
-    evals,
-    pivots,
-    runDir,
-    trailPath,
-  };
 }
 
 export function formatSelection(result: SelectionResult): string {

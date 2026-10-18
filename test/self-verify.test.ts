@@ -149,6 +149,62 @@ test("does not let a provider setting authorize a custom endpoint", async () => 
   }
 });
 
+test("scores each candidate on correctness with the TypeSafe verifier", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pi-self-verify-typesafe-"));
+  await mkdir(join(root, ".git"));
+  const originalFetch = globalThis.fetch;
+  const names = [
+    "VERIFIER_API_KEY", "TYPESAFE_API_KEY", "VERIFIER_MODEL", "VERIFIER_PROVIDER",
+    "VERIFIER_BASE_URL", "OPENAI_BASE_URL", "VERIFIER_EVALS", "VERIFIER_PIVOTS",
+  ];
+  const original = Object.fromEntries(names.map((name) => [name, process.env[name]]));
+  for (const name of names) delete process.env[name];
+  process.env.VERIFIER_PROVIDER = "typesafe";
+  process.env.TYPESAFE_API_KEY = "test";
+  const levels = new Map([["candidate 1", 1], ["candidate 2", 3], ["candidate 3", 2]]);
+  globalThis.fetch = async (input, init) => {
+    assert.equal(String(input), "https://api.typesafe.ai/v1/systemone");
+    assert.equal(new Headers(init?.headers).get("authorization"), "Bearer test");
+    const body = JSON.parse(String(init?.body)) as {
+      model: string; state: { task: string; candidate_solution: string };
+      questions: Record<string, { type: string; instructions: { criterion: string } }>;
+    };
+    assert.equal(body.model, "jev-1.13.0");
+    assert.equal(body.state.task, "choose a candidate");
+    // Only Correctness: on the benchmark, adding Verification made TypeSafe select worse.
+    assert.deepEqual(Object.values(body.questions).map((question) => question.instructions.criterion),
+      ["Correctness: Does the candidate correctly and completely solve the task?"]);
+    const score = levels.get(body.state.candidate_solution)!;
+    return new Response(JSON.stringify({ answers: { c0: { type: "score", score } } }), { status: 200 });
+  };
+  let generated = 0;
+  try {
+    const result = await runSelfVerify({
+      cwd: root,
+      task: "choose a candidate",
+      candidateCount: 3,
+      runCommand: async () => ({
+        stdout: JSON.stringify({
+          type: "message_end",
+          message: { role: "assistant", content: [{ type: "text", text: `candidate ${++generated}` }] },
+        }),
+        stderr: "",
+        code: 0,
+      }),
+    });
+    assert.equal(result.winner, "candidate 2");
+    assert.deepEqual(result.ranking.map((index) => result.candidates[index]), ["candidate 2", "candidate 3", "candidate 1"]);
+    assert.equal(result.model, "jev-1.13.0");
+  } finally {
+    globalThis.fetch = originalFetch;
+    for (const [name, value] of Object.entries(original)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("uses safe verify settings", async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-self-verify-settings-"));
   await mkdir(join(root, ".git"));

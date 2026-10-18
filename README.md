@@ -130,6 +130,14 @@ Candidate generation uses the current Pi model and only enables `read`,
 
 ## Verifier backends
 
+**TypeSafe (optional, cheap).** Set `VERIFIER_PROVIDER=typesafe` and
+`TYPESAFE_API_KEY` to score each candidate with a TypeSafe Jev model (default
+`jev-1.13.0`, override with `VERIFIER_MODEL=jev-*`). It asks one Correctness
+question per candidate instead of running a pairwise tournament, so `evals` and
+`pivots` do not apply. On the benchmark it gained about as much over a random
+pick as the DeepSeek verifier (+8 to +11 points, wide intervals) at roughly
+1/150 of the cost. DeepSeek remains the default.
+
 The verifier accepts any OpenAI-compatible endpoint that returns
 `choices[0].logprobs.content` and `top_logprobs`:
 
