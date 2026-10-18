@@ -5,7 +5,7 @@
 //   npm run bench -- selfcheck           # canonical solutions must pass, a stub must fail
 //   npm run bench -- generate [--limit N] # N tasks x BENCH_CANDIDATES candidates (resumable)
 //   npm run bench -- label               # run hidden tests on every candidate
-//   npm run bench -- select deepseek|typesafe|typesafe-correctness
+//   npm run bench -- select deepseek|prefilter|typesafe|typesafe-correctness
 //   npm run bench -- report
 //
 // Env: DEEPSEEK_API_KEY, TYPESAFE_API_KEY, BENCH_RUN (default "default"),
@@ -287,10 +287,20 @@ async function selectDeepseek(task: string, candidates: string[], workspace: str
   return { winner: result.winnerIndex, scores: result.scores };
 }
 
+// Cascade: TypeSafe drops the lowest-scored candidate, DeepSeek picks among the rest.
+async function selectPrefilter(task: string, candidates: string[], workspace: string): Promise<{ winner: number; scores: number[] }> {
+  const { scores } = await selectTypesafe(task, candidates, CRITERIA.slice(0, 1));
+  const dropped = scores.indexOf(Math.min(...scores));
+  const kept = candidates.map((_, index) => index).filter((index) => index !== dropped);
+  const picked = await selectDeepseek(task, kept.map((index) => candidates[index]), workspace);
+  return { winner: kept[picked.winner], scores };
+}
+
 async function select(method: string): Promise<void> {
   // typesafe-correctness drops the Verification criterion: the best dev-split design.
   const typesafeCriteria: Record<string, Criterion[]> = { typesafe: CRITERIA, "typesafe-correctness": CRITERIA.slice(0, 1) };
-  if (method !== "deepseek" && !typesafeCriteria[method]) throw new Error("select deepseek|typesafe|typesafe-correctness");
+  const deepseek = method === "deepseek" || method === "prefilter";
+  if (!deepseek && !typesafeCriteria[method]) throw new Error("select deepseek|prefilter|typesafe|typesafe-correctness");
   const tasks = new Map((await readJsonl<Task>(DATA)).map((task) => [task.task_id, task]));
   const labels = new Map((await readJsonl<{ task_id: number; pass: boolean[] }>(join(RUN_DIR, "labels.jsonl")))
     .map((row) => [row.task_id, row.pass]));
@@ -310,7 +320,7 @@ async function select(method: string): Promise<void> {
   delete process.env.OPENAI_BASE_URL;
   delete process.env.VERIFIER_PROVIDER;
   let finished = 0;
-  await mapLimit(rows, method === "deepseek" ? 4 : 8, async (row) => {
+  await mapLimit(rows, deepseek ? 4 : 8, async (row) => {
     const task = taskText(tasks.get(row.task_id)!);
     const counted: Usage = { input: 0, output: 0 };
     const started = Date.now();
@@ -318,6 +328,7 @@ async function select(method: string): Promise<void> {
     try {
       const picked = await taskUsage.run(counted, () => method === "deepseek"
         ? selectDeepseek(task, row.candidates, workspace)
+        : method === "prefilter" ? selectPrefilter(task, row.candidates, workspace)
         : selectTypesafe(task, row.candidates, typesafeCriteria[method]));
       entry = { task_id: row.task_id, ...picked, ms: Date.now() - started, usage: { input: 0, output: 0 } };
     } catch (error) {
@@ -346,7 +357,7 @@ function bootstrap(diffs: number[], iterations = 10_000): [number, number] {
 async function report(): Promise<void> {
   const labels = new Map((await readJsonl<{ task_id: number; pass: boolean[] }>(join(RUN_DIR, "labels.jsonl")))
     .map((row) => [row.task_id, row.pass]));
-  const methods = ["deepseek", "typesafe", "typesafe-correctness"]
+  const methods = ["deepseek", "prefilter", "typesafe", "typesafe-correctness"]
     .filter((method) => existsSync(join(RUN_DIR, `select-${method}.jsonl`)));
   const selections = new Map<string, Map<number, Selection>>();
   const failures: string[] = [];
