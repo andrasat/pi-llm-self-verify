@@ -5,7 +5,7 @@
 //   npm run bench -- selfcheck           # canonical solutions must pass, a stub must fail
 //   npm run bench -- generate [--limit N] # N tasks x BENCH_CANDIDATES candidates (resumable)
 //   npm run bench -- label               # run hidden tests on every candidate
-//   npm run bench -- select deepseek|deepseek-off|deepseek-low|deepseek-evals1|prefilter|typesafe|typesafe-correctness
+//   npm run bench -- select deepseek|deepseek-off|deepseek-low|deepseek-evals1|glm|prefilter|typesafe|typesafe-correctness
 //   npm run bench -- report
 //
 // Env: DEEPSEEK_API_KEY, TYPESAFE_API_KEY, BENCH_RUN (default "default"),
@@ -53,7 +53,12 @@ interface Selection { task_id: number; winner: number; scores: number[]; ms: num
 const usage: Usage = { input: 0, output: 0 };
 const taskUsage = new AsyncLocalStorage<Usage>();
 const realFetch = globalThis.fetch;
+const OPENROUTER = "https://openrouter.ai/api/v1";
 globalThis.fetch = async (input, init) => {
+  // Pin one OpenRouter host: many GLM hosts drop logprobs, and mixing quantizations adds noise.
+  if (String(input).startsWith(OPENROUTER) && typeof init?.body === "string") {
+    init = { ...init, body: JSON.stringify({ ...JSON.parse(init.body), provider: { order: ["Together"], allow_fallbacks: false } }) };
+  }
   const response = await realFetch(input, init);
   try {
     const data = await response.clone().json() as { usage?: Record<string, number> };
@@ -267,13 +272,13 @@ async function selectTypesafe(task: string, candidates: string[], criteria: Crit
 }
 
 // Production verifier path: real runSelfVerify, with `pi` replaced by the stored candidates.
-async function selectDeepseek(task: string, candidates: string[], workspace: string, evals = 2): Promise<{ winner: number; scores: number[] }> {
+async function selectDeepseek(task: string, candidates: string[], workspace: string, evals = 2, model = VERIFIER_MODEL): Promise<{ winner: number; scores: number[] }> {
   let call = 0;
   const result = await runSelfVerify({
     cwd: workspace,
     task,
     candidateCount: candidates.length,
-    verifierModel: VERIFIER_MODEL,
+    verifierModel: model,
     // Production defaults, pinned so local Pi settings cannot change the baseline.
     evals,
     pivots: 1,
@@ -300,8 +305,10 @@ async function select(method: string): Promise<void> {
   // typesafe-correctness drops the Verification criterion: the best dev-split design.
   const typesafeCriteria: Record<string, Criterion[]> = { typesafe: CRITERIA, "typesafe-correctness": CRITERIA.slice(0, 1) };
   // Cheaper DeepSeek settings, each against the production default.
-  const deepseekVariants: Record<string, { effort?: string; evals?: number }> = {
+  const deepseekVariants: Record<string, { effort?: string; evals?: number; model?: string }> = {
     deepseek: {}, "deepseek-off": { effort: "off" }, "deepseek-low": { effort: "low" }, "deepseek-evals1": { evals: 1 },
+    // Same runSelfVerify path through OpenRouter's OpenAI-compatible API.
+    glm: { model: "z-ai/glm-5.3-flash" },
   };
   const variant = deepseekVariants[method];
   const deepseek = Boolean(variant) || method === "prefilter";
@@ -325,6 +332,12 @@ async function select(method: string): Promise<void> {
   delete process.env.VERIFIER_BASE_URL;
   delete process.env.OPENAI_BASE_URL;
   delete process.env.VERIFIER_PROVIDER;
+  if (variant?.model) {
+    if (!process.env.OPENROUTER_API_KEY) throw new Error("set OPENROUTER_API_KEY");
+    process.env.VERIFIER_BASE_URL = OPENROUTER;
+    process.env.VERIFIER_API_KEY = process.env.OPENROUTER_API_KEY;
+    process.env.VERIFIER_MAX_TOKENS ??= "32768";
+  }
   let finished = 0;
   await mapLimit(rows, deepseek ? 4 : 8, async (row) => {
     const task = taskText(tasks.get(row.task_id)!);
@@ -333,7 +346,7 @@ async function select(method: string): Promise<void> {
     let entry: Selection;
     try {
       const picked = await taskUsage.run(counted, () => variant
-        ? selectDeepseek(task, row.candidates, workspace, variant.evals)
+        ? selectDeepseek(task, row.candidates, workspace, variant.evals, variant.model)
         : method === "prefilter" ? selectPrefilter(task, row.candidates, workspace)
         : selectTypesafe(task, row.candidates, typesafeCriteria[method]));
       entry = { task_id: row.task_id, ...picked, ms: Date.now() - started, usage: { input: 0, output: 0 } };
@@ -363,7 +376,7 @@ function bootstrap(diffs: number[], iterations = 10_000): [number, number] {
 async function report(): Promise<void> {
   const labels = new Map((await readJsonl<{ task_id: number; pass: boolean[] }>(join(RUN_DIR, "labels.jsonl")))
     .map((row) => [row.task_id, row.pass]));
-  const methods = ["deepseek", "deepseek-off", "deepseek-low", "deepseek-evals1", "prefilter", "typesafe", "typesafe-correctness"]
+  const methods = ["deepseek", "deepseek-off", "deepseek-low", "deepseek-evals1", "glm", "prefilter", "typesafe", "typesafe-correctness"]
     .filter((method) => existsSync(join(RUN_DIR, `select-${method}.jsonl`)));
   const selections = new Map<string, Map<number, Selection>>();
   const failures: string[] = [];
