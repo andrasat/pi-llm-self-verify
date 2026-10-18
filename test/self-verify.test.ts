@@ -118,6 +118,9 @@ test("does not let a provider setting authorize a custom endpoint", async () => 
   process.env.VERIFIER_BASE_URL = "https://example.test/v1";
   process.env.VERIFIER_EVALS = "1";
   process.env.VERIFIER_PIVOTS = "1";
+  // Provider-specific environment keys must not reach a different host.
+  process.env.DEEPSEEK_API_KEY = "deepseek-secret";
+  process.env.OPENAI_API_KEY = "openai-secret";
   globalThis.fetch = async (_input, init) => {
     assert.equal(new Headers(init?.headers).get("authorization"), null);
     return openAIResponse("A", "T");
@@ -162,15 +165,16 @@ test("uses safe verify settings", async () => {
   } }));
   const originalFetch = globalThis.fetch;
   const names = [
-    "VERIFIER_API_KEY", "VERIFIER_BASE_URL", "OPENAI_BASE_URL", "VERIFIER_MODEL",
+    "VERIFIER_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY", "VERIFIER_BASE_URL", "OPENAI_BASE_URL", "VERIFIER_MODEL",
     "VERIFIER_PROVIDER", "VERIFIER_TOP_LOGPROBS", "VERIFIER_MAX_TOKENS",
     "DEEPSEEK_MAX_TOKENS", "DEEPSEEK_EFFORT", "VERIFIER_EVALS", "VERIFIER_PIVOTS",
   ];
   const original = Object.fromEntries(names.map((name) => [name, process.env[name]]));
   for (const name of names) delete process.env[name];
-  process.env.VERIFIER_API_KEY = "test";
+  process.env.DEEPSEEK_API_KEY = "test";
   globalThis.fetch = async (input, init) => {
     assert.equal(String(input), "https://api.deepseek.com/chat/completions");
+    assert.equal(new Headers(init?.headers).get("authorization"), "Bearer test");
     const body = JSON.parse(String(init?.body)) as {
       model: string; max_tokens: number; top_logprobs: number; thinking?: unknown; reasoning_effort?: unknown;
     };

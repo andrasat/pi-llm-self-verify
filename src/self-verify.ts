@@ -395,9 +395,13 @@ async function verifierConfig(root: string, options: VerifyOptions, settings?: J
   const storedKeyAllowed = !explicitBase
     || Boolean(explicitAuthProvider)
     || (expectedHosts[authProvider] || []).includes(new URL(explicitBase).hostname);
+  // Provider keys go only to their own host; OPENAI_API_KEY also pairs with OPENAI_BASE_URL.
+  const host = new URL(baseUrl).hostname;
+  const openAIKeyAllowed = expectedHosts.openai.includes(host)
+    || (!process.env.VERIFIER_BASE_URL && Boolean(process.env.OPENAI_BASE_URL));
   const apiKey = process.env.VERIFIER_API_KEY
-    || process.env.OPENAI_API_KEY
-    || process.env.DEEPSEEK_API_KEY
+    || (openAIKeyAllowed ? process.env.OPENAI_API_KEY : undefined)
+    || (expectedHosts.deepseek.includes(host) ? process.env.DEEPSEEK_API_KEY : undefined)
     || (storedKeyAllowed ? readAuthKey(authProvider) : undefined);
   if (effectiveModel.startsWith("deepseek") && !apiKey) {
     throw new Error("no verifier API key (set VERIFIER_API_KEY, DEEPSEEK_API_KEY, or Pi /login deepseek)");

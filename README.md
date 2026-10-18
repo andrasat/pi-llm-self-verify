@@ -108,7 +108,7 @@ a repository settings file must not select where a stored credential is sent.
 | `VERIFIER_BASE_URL` or `OPENAI_BASE_URL` | — | OpenAI-compatible `/v1` or `/chat/completions` base; environment only |
 | `VERIFIER_AUTH_PROVIDER` | — | Explicit Pi `/login` provider id for stored API-key reuse with a custom HTTPS endpoint; environment only |
 | `VERTEX_BASE_URL` | — | Full Vertex `:generateContent` URL; environment only |
-| `VERIFIER_API_KEY`, `OPENAI_API_KEY`, or `DEEPSEEK_API_KEY` | — | OpenAI-compatible API key; environment/Pi auth only |
+| `VERIFIER_API_KEY`, `OPENAI_API_KEY`, or `DEEPSEEK_API_KEY` | — | OpenAI-compatible API key; environment/Pi auth only. `VERIFIER_API_KEY` goes to any verifier endpoint; `DEEPSEEK_API_KEY` only to `api.deepseek.com`; `OPENAI_API_KEY` only to `api.openai.com` or the `OPENAI_BASE_URL` endpoint |
 | `VERTEX_API_KEY` or `GOOGLE_API_KEY` | — | Vertex API key; environment only |
 | `VERTEX_ACCESS_TOKEN` or `GOOGLE_OAUTH_ACCESS_TOKEN` | — | Vertex OAuth access token; environment only |
 

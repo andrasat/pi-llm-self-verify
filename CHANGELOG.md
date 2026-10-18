@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Send `DEEPSEEK_API_KEY` only to `api.deepseek.com`, and `OPENAI_API_KEY` only to
+  `api.openai.com` or the `OPENAI_BASE_URL` endpoint. Before, either key could be
+  sent to any custom `VERIFIER_BASE_URL`. Use `VERIFIER_API_KEY` for other endpoints.
 - Send `thinking: disabled` to DeepSeek when the verifier effort is `off`. Before,
   `off` left DeepSeek's default thinking on. On the benchmark, a verifier with no
   thinking picks no better than random, so `off` is not recommended.
