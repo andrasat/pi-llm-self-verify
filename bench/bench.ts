@@ -5,7 +5,7 @@
 //   npm run bench -- selfcheck           # canonical solutions must pass, a stub must fail
 //   npm run bench -- generate [--limit N] # N tasks x BENCH_CANDIDATES candidates (resumable)
 //   npm run bench -- label               # run hidden tests on every candidate
-//   npm run bench -- select deepseek|deepseek-off|prefilter|typesafe|typesafe-correctness
+//   npm run bench -- select deepseek|deepseek-off|deepseek-low|deepseek-evals1|prefilter|typesafe|typesafe-correctness
 //   npm run bench -- report
 //
 // Env: DEEPSEEK_API_KEY, TYPESAFE_API_KEY, BENCH_RUN (default "default"),
@@ -267,7 +267,7 @@ async function selectTypesafe(task: string, candidates: string[], criteria: Crit
 }
 
 // Production verifier path: real runSelfVerify, with `pi` replaced by the stored candidates.
-async function selectDeepseek(task: string, candidates: string[], workspace: string): Promise<{ winner: number; scores: number[] }> {
+async function selectDeepseek(task: string, candidates: string[], workspace: string, evals = 2): Promise<{ winner: number; scores: number[] }> {
   let call = 0;
   const result = await runSelfVerify({
     cwd: workspace,
@@ -275,7 +275,7 @@ async function selectDeepseek(task: string, candidates: string[], workspace: str
     candidateCount: candidates.length,
     verifierModel: VERIFIER_MODEL,
     // Production defaults, pinned so local Pi settings cannot change the baseline.
-    evals: 2,
+    evals,
     pivots: 1,
     topLogprobs: 20,
     runCommand: async () => {
@@ -299,8 +299,13 @@ async function selectPrefilter(task: string, candidates: string[], workspace: st
 async function select(method: string): Promise<void> {
   // typesafe-correctness drops the Verification criterion: the best dev-split design.
   const typesafeCriteria: Record<string, Criterion[]> = { typesafe: CRITERIA, "typesafe-correctness": CRITERIA.slice(0, 1) };
-  const deepseek = ["deepseek", "deepseek-off", "prefilter"].includes(method);
-  if (!deepseek && !typesafeCriteria[method]) throw new Error("select deepseek|deepseek-off|prefilter|typesafe|typesafe-correctness");
+  // Cheaper DeepSeek settings, each against the production default.
+  const deepseekVariants: Record<string, { effort?: string; evals?: number }> = {
+    deepseek: {}, "deepseek-off": { effort: "off" }, "deepseek-low": { effort: "low" }, "deepseek-evals1": { evals: 1 },
+  };
+  const variant = deepseekVariants[method];
+  const deepseek = Boolean(variant) || method === "prefilter";
+  if (!deepseek && !typesafeCriteria[method]) throw new Error(`select ${[...Object.keys(deepseekVariants), "prefilter", ...Object.keys(typesafeCriteria)].join("|")}`);
   const tasks = new Map((await readJsonl<Task>(DATA)).map((task) => [task.task_id, task]));
   const labels = new Map((await readJsonl<{ task_id: number; pass: boolean[] }>(join(RUN_DIR, "labels.jsonl")))
     .map((row) => [row.task_id, row.pass]));
@@ -313,7 +318,7 @@ async function select(method: string): Promise<void> {
     });
   const workspace = await mkdtemp(join(tmpdir(), "self-verify-bench-"));
   // Isolate the baseline from local Pi settings and shell overrides.
-  if (method === "deepseek-off") process.env.DEEPSEEK_EFFORT = "off";
+  if (variant?.effort) process.env.DEEPSEEK_EFFORT = variant.effort;
   process.env.DEEPSEEK_EFFORT ??= "high";
   delete process.env.VERIFIER_EVALS;
   delete process.env.VERIFIER_PIVOTS;
@@ -327,8 +332,8 @@ async function select(method: string): Promise<void> {
     const started = Date.now();
     let entry: Selection;
     try {
-      const picked = await taskUsage.run(counted, () => method === "deepseek" || method === "deepseek-off"
-        ? selectDeepseek(task, row.candidates, workspace)
+      const picked = await taskUsage.run(counted, () => variant
+        ? selectDeepseek(task, row.candidates, workspace, variant.evals)
         : method === "prefilter" ? selectPrefilter(task, row.candidates, workspace)
         : selectTypesafe(task, row.candidates, typesafeCriteria[method]));
       entry = { task_id: row.task_id, ...picked, ms: Date.now() - started, usage: { input: 0, output: 0 } };
@@ -358,7 +363,7 @@ function bootstrap(diffs: number[], iterations = 10_000): [number, number] {
 async function report(): Promise<void> {
   const labels = new Map((await readJsonl<{ task_id: number; pass: boolean[] }>(join(RUN_DIR, "labels.jsonl")))
     .map((row) => [row.task_id, row.pass]));
-  const methods = ["deepseek", "deepseek-off", "prefilter", "typesafe", "typesafe-correctness"]
+  const methods = ["deepseek", "deepseek-off", "deepseek-low", "deepseek-evals1", "prefilter", "typesafe", "typesafe-correctness"]
     .filter((method) => existsSync(join(RUN_DIR, `select-${method}.jsonl`)));
   const selections = new Map<string, Map<number, Selection>>();
   const failures: string[] = [];
