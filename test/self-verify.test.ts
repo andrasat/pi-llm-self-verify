@@ -172,12 +172,13 @@ test("uses safe verify settings", async () => {
   globalThis.fetch = async (input, init) => {
     assert.equal(String(input), "https://api.deepseek.com/chat/completions");
     const body = JSON.parse(String(init?.body)) as {
-      model: string; max_tokens: number; top_logprobs: number; thinking?: unknown;
+      model: string; max_tokens: number; top_logprobs: number; thinking?: unknown; reasoning_effort?: unknown;
     };
     assert.equal(body.model, "deepseek-v4-flash");
     assert.equal(body.max_tokens, 123);
     assert.equal(body.top_logprobs, 5);
-    assert.equal(body.thinking, undefined);
+    assert.deepEqual(body.thinking, { type: "disabled" });
+    assert.equal(body.reasoning_effort, undefined);
     return openAIResponse("A", "T");
   };
   let generated = 0;

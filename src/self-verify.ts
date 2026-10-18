@@ -447,9 +447,10 @@ async function callOpenAI(config: VerifierConfig, prompt: string, signal?: Abort
     logprobs: config.provider === "together" ? 1 : true,
     top_logprobs: config.topLogprobs,
   };
-  if (config.model.startsWith("deepseek") && config.thinking) {
-    body.thinking = { type: "enabled" };
-    if (config.effort) body.reasoning_effort = config.effort;
+  if (config.model.startsWith("deepseek")) {
+    // DeepSeek thinks by default, so "off" must be sent explicitly.
+    body.thinking = { type: config.thinking ? "enabled" : "disabled" };
+    if (config.thinking && config.effort) body.reasoning_effort = config.effort;
   }
   const response = await fetch(config.url, {
     method: "POST",
