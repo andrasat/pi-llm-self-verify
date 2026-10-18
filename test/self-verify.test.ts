@@ -155,12 +155,14 @@ test("scores each candidate on correctness with the TypeSafe verifier", async ()
   const originalFetch = globalThis.fetch;
   const names = [
     "VERIFIER_API_KEY", "TYPESAFE_API_KEY", "VERIFIER_MODEL", "VERIFIER_PROVIDER",
-    "VERIFIER_BASE_URL", "OPENAI_BASE_URL", "VERIFIER_EVALS", "VERIFIER_PIVOTS",
+    "VERIFIER_BASE_URL", "OPENAI_BASE_URL", "VERIFIER_EVALS", "VERIFIER_PIVOTS", "PI_CODING_AGENT_DIR",
   ];
   const original = Object.fromEntries(names.map((name) => [name, process.env[name]]));
   for (const name of names) delete process.env[name];
   process.env.VERIFIER_PROVIDER = "typesafe";
-  process.env.TYPESAFE_API_KEY = "test";
+  // The key comes from Pi's /login store, not the environment.
+  process.env.PI_CODING_AGENT_DIR = root;
+  await writeFile(join(root, "auth.json"), JSON.stringify({ typesafe: { type: "api_key", key: "test" } }));
   const levels = new Map([["candidate 1", 1], ["candidate 2", 3], ["candidate 3", 2]]);
   globalThis.fetch = async (input, init) => {
     assert.equal(String(input), "https://api.typesafe.ai/v1/systemone");
@@ -355,6 +357,16 @@ test("uses Vertex response logprobs when configured", async () => {
         code: 0,
       }),
     }), /top_logprobs.*score_A/);
+
+    // A location such as "evil.example#" would otherwise move the request, and the token, to another host.
+    await writeFile(join(root, ".pi", "settings.json"), JSON.stringify({ verify: { project: "test-project", location: "evil.example#" } }));
+    globalThis.fetch = async () => assert.fail("no request may be sent for an invalid location");
+    await assert.rejects(runSelfVerify({
+      cwd: root,
+      task: "reject a host-changing location",
+      candidateCount: 2,
+      runCommand: async () => assert.fail("no candidates before the verifier is configured"),
+    }), /Vertex location/);
   } finally {
     globalThis.fetch = originalFetch;
     for (const [name, value] of Object.entries(original)) {
@@ -401,7 +413,10 @@ test("runs a read-only candidate selection and records artifacts", async () => {
       task: "choose a candidate",
       candidateCount: 3,
       topLogprobs: 5,
-      runCommand: async () => {
+      runCommand: async (_command, args) => {
+        // Candidates must not load project resources or extensions, even in a trusted project.
+        assert.ok(args.includes("--no-approve") && args.includes("--no-extensions"));
+        assert.ok(!args.includes("--approve"));
         generated += 1;
         return {
           stdout: JSON.stringify({
@@ -418,8 +433,8 @@ test("runs a read-only candidate selection and records artifacts", async () => {
     assert.equal(result.ranking[0], 1);
     assert.equal(result.evals, 1);
     assert.equal(result.pivots, 1);
-    assert.match(result.runDir, /\.pi\/verify\/candidates\//);
-    assert.match(result.trailPath, /\.pi\/verify\/trail\.jsonl$/);
+    assert.match(result.runDir, /\.pi[\\/]verify[\\/]candidates[\\/]/);
+    assert.match(result.trailPath, /\.pi[\\/]verify[\\/]trail\.jsonl$/);
     if (process.platform !== "win32") {
       for (const path of [join(root, ".pi", "verify"), join(root, ".pi", "verify", "candidates"), result.runDir]) {
         assert.equal((await stat(path)).mode & 0o777, 0o700);

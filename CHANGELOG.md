@@ -1,8 +1,16 @@
 # Changelog
 
-## Unreleased
+## 0.1.0-rc.5 - 2026-10-18
 
-- Add an optional TypeSafe verifier backend (`VERIFIER_PROVIDER=typesafe`).
+- Security: start candidate subprocesses with `--no-approve` instead of
+  `--approve`. Before, a repository's `.pi/settings.json` could make each
+  candidate install the packages it lists, running their npm install scripts,
+  even when the user had not trusted the project.
+- Security: reject a Vertex `location` that is not a plain region name. Before,
+  a project setting such as `"location": "evil.example#"` sent the Vertex
+  request, with its API key or access token, to another host.
+- Add an optional TypeSafe verifier backend (`VERIFIER_PROVIDER=typesafe`). It
+  reads `TYPESAFE_API_KEY` or the key stored by `/login typesafe`.
 - Send `DEEPSEEK_API_KEY` only to `api.deepseek.com`, and `OPENAI_API_KEY` only to
   `api.openai.com` or the `OPENAI_BASE_URL` endpoint. Before, either key could be
   sent to any custom `VERIFIER_BASE_URL`. Use `VERIFIER_API_KEY` for other endpoints.

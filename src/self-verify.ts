@@ -245,7 +245,9 @@ async function generateCandidate(options: VerifyOptions, index: number, criteria
     "--mode", "json",
     "--print",
     "--no-session",
-    "--approve",
+    // Never trust project files here: trusted project settings make Pi install
+    // their packages (running npm scripts) even with --no-extensions.
+    "--no-approve",
     "--no-extensions",
     "--no-skills",
     "--no-context-files",
@@ -326,6 +328,8 @@ function vertexEndpoint(model: string, settings: JsonObject): string {
     || process.env.VERTEX_LOCATION
     || (typeof settings.location === "string" ? settings.location : undefined)
     || "global";
+  // The location becomes part of the host, so a project setting must not be able to change the host.
+  if (!/^[a-z0-9-]+$/.test(location)) throw new Error("Vertex location must contain only lowercase letters, digits, and hyphens");
   const host = location === "global" ? "aiplatform.googleapis.com" : `${location}-aiplatform.googleapis.com`;
   return `https://${host}/v1/projects/${encodeURIComponent(project)}/locations/${encodeURIComponent(location)}/publishers/google/models/${encodeURIComponent(model)}:generateContent`;
 }
@@ -343,8 +347,9 @@ async function verifierConfig(root: string, options: VerifyOptions, settings?: J
   if (requestedProvider?.toLowerCase() === "typesafe") {
     const model = configuredModel || DEFAULT_TYPESAFE_MODEL;
     if (!model.startsWith("jev-")) throw new Error("TypeSafe verifier models must be named jev-*");
-    const apiKey = process.env.TYPESAFE_API_KEY;
-    if (!apiKey) throw new Error("set TYPESAFE_API_KEY for the TypeSafe verifier");
+    // The host is fixed, so a stored /login key cannot be sent elsewhere.
+    const apiKey = process.env.TYPESAFE_API_KEY || readAuthKey("typesafe");
+    if (!apiKey) throw new Error("set TYPESAFE_API_KEY or run /login typesafe for the TypeSafe verifier");
     return {
       backend: "typesafe",
       provider: "typesafe",

@@ -29,7 +29,7 @@ pi install /absolute/path/to/pi-llm-self-verify
 Current release candidate from Git:
 
 ```bash
-pi install git:github.com/andrasat/pi-llm-self-verify@v0.1.0-rc.4
+pi install git:github.com/andrasat/pi-llm-self-verify@v0.1.0-rc.5
 ```
 
 Use `-l` with either command to write the package to the current project's
@@ -130,13 +130,25 @@ Candidate generation uses the current Pi model and only enables `read`,
 
 ## Verifier backends
 
-**TypeSafe (optional, cheap).** Set `VERIFIER_PROVIDER=typesafe` and
-`TYPESAFE_API_KEY` to score each candidate with a TypeSafe Jev model (default
-`jev-1.13.0`, override with `VERIFIER_MODEL=jev-*`). It asks one Correctness
+**TypeSafe (optional, cheap).** Set `VERIFIER_PROVIDER=typesafe` (or
+`"provider": "typesafe"` in `verify` settings) to score each candidate with a
+TypeSafe Jev model (default `jev-1.13.0`, override with `VERIFIER_MODEL=jev-*`).
+The key comes from `TYPESAFE_API_KEY`, or from Pi's stored credential after
+`/login typesafe`; it is only sent to `api.typesafe.ai`. It asks one Correctness
 question per candidate instead of running a pairwise tournament, so `evals` and
 `pivots` do not apply. On the benchmark it gained about as much over a random
 pick as the DeepSeek verifier (+8 to +11 points, wide intervals) at roughly
 1/150 of the cost. DeepSeek remains the default.
+
+To try it, store the key once inside Pi with `/login typesafe` (or export
+`TYPESAFE_API_KEY`), then start Pi with the provider selected:
+
+```bash
+VERIFIER_PROVIDER=typesafe pi
+```
+
+and run `/self-verify <task>` as usual. To make it the project default, put
+`"provider": "typesafe"` under `verify` in `.pi/settings.json`.
 
 The verifier accepts any OpenAI-compatible endpoint that returns
 `choices[0].logprobs.content` and `top_logprobs`:
